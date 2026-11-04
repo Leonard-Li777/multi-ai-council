@@ -244,8 +244,14 @@ export default defineBackground(() => {
       sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job } });
     }
 
-    // 针对启用的所有站点逐一调度与创建/复用标签页
+    // 针对启用的所有站点逐一调度与创建/复用标签页（引入 1.5~3s 错峰抖动平滑激活）
+    let isFirst = true;
     for (const siteName of job.aggregationPolicy.enabledSites) {
+      if (!isFirst) {
+        const jitterMs = 1500 + Math.floor(Math.random() * 1500);
+        await new Promise((r) => setTimeout(r, jitterMs));
+      }
+      isFirst = false;
       await ensureSiteTabAndDispatch(siteName, job);
     }
   }

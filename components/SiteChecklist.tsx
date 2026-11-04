@@ -17,12 +17,12 @@ export interface SiteDefinition {
 
 export const SUPPORTED_SITES: SiteDefinition[] = [
   { id: 'DeepSeek', name: 'DeepSeek', url: 'https://chat.deepseek.com', isReady: true },
-  { id: 'Qwen', name: '通义千问', url: 'https://chat.qwen.ai', isReady: false },
-  { id: 'Wenxin', name: '文心一言', url: 'https://wenxin.baidu.com', isReady: false },
-  { id: 'ChatGLM', name: '智谱清言', url: 'https://chatglm.cn', isReady: false },
-  { id: 'ChatGPT', name: 'ChatGPT', url: 'https://chatgpt.com', isReady: false },
-  { id: 'Claude', name: 'Claude', url: 'https://claude.ai', isReady: false },
-  { id: 'Gemini', name: 'Gemini', url: 'https://gemini.google.com', isReady: false },
+  { id: 'ChatGPT', name: 'ChatGPT', url: 'https://chatgpt.com', isReady: true },
+  { id: 'Claude', name: 'Claude', url: 'https://claude.ai', isReady: true },
+  { id: 'Gemini', name: 'Gemini', url: 'https://gemini.google.com', isReady: true },
+  { id: 'Qwen', name: '通义千问', url: 'https://chat.qwen.ai', isReady: true },
+  { id: 'Wenxin', name: '文心一言', url: 'https://wenxin.baidu.com', isReady: true },
+  { id: 'ChatGLM', name: '智谱清言', url: 'https://chatglm.cn', isReady: true },
 ];
 
 export const SiteChecklist: React.FC<SiteChecklistProps> = ({
