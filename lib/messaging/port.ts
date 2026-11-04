@@ -15,13 +15,14 @@ export type PortMessage =
   | { type: 'RETRY_SITE'; payload: { siteName: SupportedSite } }
   | { type: 'SKIP_SITE'; payload: { jobId?: string; siteName: SupportedSite; reason?: string } }
   | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string } }
+  | { type: 'TRIGGER_SYNTHESIS'; payload: { jobId: string } }
 
   // Background -> Side Panel
   | { type: 'JOB_SYNC'; payload: { job: ReviewJob } }
   | { type: 'TAB_CLOSED'; payload: { siteName: SupportedSite; tabId: number } }
 
   // Content Script -> Background / Side Panel
-  | { type: 'CONTENT_READY'; payload: { siteName: SupportedSite; url: string } }
+  | { type: 'CONTENT_READY'; payload: { siteName: SupportedSite; url: string; tabId?: number } }
   | {
       type: 'STREAM_UPDATE';
       payload: {
@@ -43,6 +44,23 @@ export type PortMessage =
       };
     }
   | {
+      type: 'SYNTHESIS_STREAM_UPDATE';
+      payload: {
+        jobId: string;
+        snapshot: string;
+        isFinished: boolean;
+      };
+    }
+  | {
+      type: 'SYNTHESIS_STATUS_CHANGE';
+      payload: {
+        jobId: string;
+        status: ProviderStatus;
+        finalMarkdown?: string;
+        errorReason?: string;
+      };
+    }
+  | {
       type: 'UPDATE_CONVERSATION_URL';
       payload: {
         siteName: SupportedSite;
@@ -59,6 +77,13 @@ export type PortMessage =
         prompt: string;
         isContinuation: boolean;
         siteName: SupportedSite;
+      };
+    }
+  | {
+      type: 'DISPATCH_SYNTHESIS_PROMPT';
+      payload: {
+        jobId: string;
+        metaPrompt: string;
       };
     };
 

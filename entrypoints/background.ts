@@ -11,6 +11,7 @@ import {
   batchUpdateProviderRuns,
   saveConversationRef,
   getConversationRef,
+  updateSynthesisRun,
 } from '../lib/storage/job-store';
 import type { ReviewJob, SupportedSite, ProviderConversationRef, ProviderRun } from '../lib/types/review-job';
 import {
@@ -18,6 +19,8 @@ import {
   getTargetDispatchUrl,
   SITE_BASE_URLS,
 } from '../lib/utils/conversation-helper';
+import { buildAnonymizedSynthesisPrompt } from '../lib/utils/synthesis-builder';
+import { calculateQuorumProgress } from '../lib/utils/quorum-calculator';
 
 const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
   DeepSeek: ['*://chat.deepseek.com/*'],
@@ -43,6 +46,9 @@ export default defineBackground(() => {
   let sidePanelPort: chrome.runtime.Port | null = null;
   const contentPorts = new Map<SupportedSite, chrome.runtime.Port>();
   const siteTabs = new Map<SupportedSite, number>();
+  let synthesisTabId: number | null = null;
+  let synthesisPort: chrome.runtime.Port | null = null;
+  let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string } | null = null;
 
   chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
     if (port.name === SIDEPANEL_PORT_NAME) {
@@ -91,6 +97,8 @@ export default defineBackground(() => {
               sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
             }
           }
+        } else if (msg.type === 'TRIGGER_SYNTHESIS') {
+          await triggerSynthesis(msg.payload.jobId);
         } else if (msg.type === 'FAST_FORWARD_QUORUM') {
           const activeJob = await getActiveJob();
           if (activeJob && activeJob.id === msg.payload.jobId) {
@@ -115,6 +123,7 @@ export default defineBackground(() => {
             if (updated && sidePanelPort) {
               sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
             }
+            await triggerSynthesis(activeJob.id);
           }
         }
       });
@@ -127,9 +136,29 @@ export default defineBackground(() => {
 
     if (port.name === CONTENT_PORT_NAME) {
       let registeredSite: SupportedSite | null = null;
+      const senderTabId = port.sender?.tab?.id;
+      const isSynthesisTab = senderTabId !== undefined && senderTabId === synthesisTabId;
+
+      if (isSynthesisTab) {
+        synthesisPort = port;
+        console.log('[Background] Synthesis DeepSeek Port connected');
+      }
 
       port.onMessage.addListener(async (msg: PortMessage) => {
         if (msg.type === 'CONTENT_READY') {
+          if (isSynthesisTab || (synthesisTabId && senderTabId === synthesisTabId)) {
+            console.log('[Background] Synthesis DeepSeek Tab ready');
+            synthesisPort = port;
+            if (pendingSynthesisMetaPrompt) {
+              synthesisPort.postMessage({
+                type: 'DISPATCH_SYNTHESIS_PROMPT',
+                payload: pendingSynthesisMetaPrompt,
+              });
+              pendingSynthesisMetaPrompt = null;
+            }
+            return;
+          }
+
           registeredSite = msg.payload.siteName;
           contentPorts.set(registeredSite, port);
           console.log(`[Background] Content Script ready for ${registeredSite}`);
@@ -172,6 +201,10 @@ export default defineBackground(() => {
           if (updated && sidePanelPort) {
             sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
           }
+
+          if (status === 'DONE' || status === 'FAILED' || status === 'TIMEOUT') {
+            await checkAutoTriggerSynthesis(jobId);
+          }
         } else if (msg.type === 'STREAM_UPDATE') {
           const { siteName, jobId, snapshot, cleaned, isFinished } = msg.payload;
           const updated = await updateProviderRun(jobId, siteName, {
@@ -180,6 +213,28 @@ export default defineBackground(() => {
             status: isFinished ? 'DONE' : 'STREAMING',
           });
 
+          if (updated && sidePanelPort) {
+            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+          }
+
+          if (isFinished) {
+            await checkAutoTriggerSynthesis(jobId);
+          }
+        } else if (msg.type === 'SYNTHESIS_STREAM_UPDATE') {
+          const { jobId, snapshot, isFinished } = msg.payload;
+          const updated = await updateSynthesisRun(jobId, {
+            status: isFinished ? 'DONE' : 'STREAMING',
+            finalMarkdown: snapshot,
+          });
+          if (updated && sidePanelPort) {
+            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+          }
+        } else if (msg.type === 'SYNTHESIS_STATUS_CHANGE') {
+          const { jobId, status, finalMarkdown, errorReason } = msg.payload;
+          const updated = await updateSynthesisRun(jobId, {
+            status,
+            finalMarkdown,
+          });
           if (updated && sidePanelPort) {
             sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
           }
@@ -216,6 +271,20 @@ export default defineBackground(() => {
 
   // 监听标签页意外关闭
   chrome.tabs.onRemoved.addListener(async (tabId: number) => {
+    if (tabId === synthesisTabId) {
+      synthesisTabId = null;
+      synthesisPort = null;
+      const activeJob = await getActiveJob();
+      if (activeJob && activeJob.synthesisRun?.status === 'STREAMING') {
+        const updated = await updateSynthesisRun(activeJob.id, {
+          status: 'TAB_CLOSED',
+        });
+        if (updated && sidePanelPort) {
+          sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+        }
+      }
+    }
+
     for (const [site, id] of siteTabs.entries()) {
       if (id === tabId) {
         siteTabs.delete(site);
@@ -345,6 +414,70 @@ export default defineBackground(() => {
       });
     } else {
       console.warn(`[Background] Port for ${siteName} not found during dispatch`);
+    }
+  }
+
+  async function checkAutoTriggerSynthesis(jobId: string) {
+    const job = await getActiveJob();
+    if (!job || job.id !== jobId) return;
+    if (job.synthesisRun && job.synthesisRun.status !== 'PENDING') return;
+
+    const quorum = calculateQuorumProgress(job);
+    if (quorum.isAllSettled && quorum.completedCount >= quorum.minRequired) {
+      await triggerSynthesis(job.id);
+    }
+  }
+
+  async function triggerSynthesis(jobId: string) {
+    const job = await getActiveJob();
+    if (!job || job.id !== jobId) return;
+    if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
+
+    const runs = Object.values(job.providerRuns);
+    const { metaPrompt, anonymousMap, participatingCount } = buildAnonymizedSynthesisPrompt(
+      job.originalPrompt,
+      runs
+    );
+
+    if (participatingCount === 0 || !metaPrompt) {
+      console.warn('[Background] No completed provider runs available for synthesis');
+      return;
+    }
+
+    console.log(`[Background] Triggering synthesis for Job ${jobId} with ${participatingCount} anonymous models`);
+
+    pendingSynthesisMetaPrompt = { jobId, metaPrompt };
+
+    // 1. 创建全新的 DeepSeek 标签页作为终审专用窗口并加入 Tab Group
+    const targetTab = await chrome.tabs.create({
+      url: 'https://chat.deepseek.com/',
+      active: false,
+    });
+
+    if (targetTab?.id) {
+      synthesisTabId = targetTab.id;
+      try {
+        if (chrome.tabs.group) {
+          const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
+          await chrome.tabGroups.update(groupId, {
+            title: 'Multi-AI Council',
+            color: 'blue',
+          });
+        }
+      } catch (e) {
+        console.warn('[Background] Tab Grouping for synthesis tab skipped', e);
+      }
+    }
+
+    const updated = await updateSynthesisRun(job.id, {
+      tabId: targetTab?.id,
+      status: 'WAITING_READY',
+      anonymousMap,
+      finalMarkdown: '',
+    });
+
+    if (updated && sidePanelPort) {
+      sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
     }
   }
 });

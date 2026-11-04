@@ -16,6 +16,7 @@ import {
 import { SiteChecklist } from '../../components/SiteChecklist';
 import { PromptInput } from '../../components/PromptInput';
 import { SiteStatusCard } from '../../components/SiteStatusCard';
+import { SynthesisCard } from '../../components/SynthesisCard';
 import { JobControls } from '../../components/JobControls';
 import { detectContinuation } from '../../lib/utils/continuation-detector';
 import {
@@ -203,13 +204,17 @@ export const App: React.FC = () => {
 
   const isRunning =
     activeJob !== null &&
-    Object.values(activeJob.providerRuns).some(
+    (Object.values(activeJob.providerRuns).some(
       (run) =>
         run.status === 'OPENING_TAB' ||
         run.status === 'WAITING_READY' ||
         run.status === 'SENDING' ||
         run.status === 'STREAMING'
-    );
+    ) ||
+      activeJob.synthesisRun?.status === 'OPENING_TAB' ||
+      activeJob.synthesisRun?.status === 'WAITING_READY' ||
+      activeJob.synthesisRun?.status === 'SENDING' ||
+      activeJob.synthesisRun?.status === 'STREAMING');
 
   return (
     <div className="flex flex-col min-h-screen p-3.5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-xs">
@@ -269,6 +274,11 @@ export const App: React.FC = () => {
         onToggleOverride={handleToggleOverride}
         disabled={isRunning}
       />
+
+      {/* 终审综合聚合报告卡片 */}
+      {activeJob?.synthesisRun && (
+        <SynthesisCard synthesisRun={activeJob.synthesisRun} />
+      )}
 
       {/* 任务状态卡片矩阵 */}
       <div className="flex-1 overflow-y-auto mb-3">

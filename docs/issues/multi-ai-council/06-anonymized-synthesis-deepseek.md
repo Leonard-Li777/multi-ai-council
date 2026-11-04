@@ -1,6 +1,6 @@
 # Ticket 06: Model A~E 匿名化打乱与 DeepSeek 终审聚合链路
 
-- **状态**: ready-for-agent
+- **状态**: completed
 - **环级归属**: 第 4 环 (L4 Context & History)
 - **父级目标**: [Multi-AI Council 深度技术规格书](../../specs/multi-ai-council-spec.md)
 
@@ -12,8 +12,8 @@
 - 依赖工单：[05-qwen-wenxin-chatglm-gemini.md](./05-qwen-wenxin-chatglm-gemini.md)
 
 **验收准则 (Acceptance criteria):**
-- [ ] 5 方（或 Quorum 满足的 N 方）全部就绪后，自动触发终审流水线。
-- [ ] 建立双向匿名映射字典（如 `Model A -> Claude`, `Model B -> DeepSeek`），原始回答内站点名均被脱敏替换。
-- [ ] Meta-Prompt 包含明确的数据沙箱包裹符与防 Prompt Injection 约束声明。
-- [ ] 自动在 Tab Group 中打开新的 DeepSeek 独立标签页，自动输入并提交聚合任务。
-- [ ] 终审生成内容流式回传至 Side Panel，最终结果完整落盘至 IndexedDB 的 `synthesisRun` 字段。
+- [x] 5 方（或 Quorum 满足的 N 方）全部就绪后，自动触发终审流水线。
+- [x] 建立双向匿名映射字典（如 `Model A -> Claude`, `Model B -> DeepSeek`），原始回答内站点名均被脱敏替换。
+- [x] Meta-Prompt 包含明确的数据沙箱包裹符与防 Prompt Injection 约束声明。
+- [x] 自动在 Tab Group 中打开新的 DeepSeek 独立标签页，自动输入并提交聚合任务。
+- [x] 终审生成内容流式回传至 Side Panel，最终结果完整落盘至 IndexedDB 的 `synthesisRun` 字段。

@@ -1,5 +1,11 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { ReviewJob, ProviderRun, SupportedSite, ProviderConversationRef } from '../types/review-job';
+import type {
+  ReviewJob,
+  ProviderRun,
+  SupportedSite,
+  ProviderConversationRef,
+  SynthesisRun,
+} from '../types/review-job';
 
 interface MultiAIDB extends DBSchema {
   jobs: {
@@ -299,4 +305,30 @@ export async function clearAllConversationRefs(): Promise<void> {
   } catch (err) {
     console.warn('[JobStore] Failed to clear conversation refs from IndexedDB', err);
   }
+}
+
+/**
+ * 更新终审聚合任务状态 (SynthesisRun)
+ */
+export async function updateSynthesisRun(
+  jobId: string,
+  updates: Partial<SynthesisRun>
+): Promise<ReviewJob | null> {
+  const current = await getActiveJob();
+  if (!current || current.id !== jobId) return null;
+
+  const currentSynthesis: SynthesisRun = current.synthesisRun || {
+    status: 'PENDING',
+    anonymousMap: {},
+    finalMarkdown: '',
+  };
+
+  const updatedSynthesis: SynthesisRun = {
+    ...currentSynthesis,
+    ...updates,
+  };
+
+  current.synthesisRun = updatedSynthesis;
+  await saveActiveJob(current);
+  return current;
 }

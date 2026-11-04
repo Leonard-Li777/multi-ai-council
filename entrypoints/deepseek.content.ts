@@ -114,6 +114,96 @@ export default defineContentScript({
             });
           }
         );
+      } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+        const { jobId, metaPrompt } = msg.payload;
+        currentJobId = jobId;
+
+        console.log(`[DeepSeekContent] Received SYNTHESIS prompt for Job ${jobId}`);
+
+        // 1. 检查页面阻断状态
+        const blocker = await deepSeekAdapter.checkBlocker();
+        if (blocker === 'CAPTCHA') {
+          send({
+            type: 'SYNTHESIS_STATUS_CHANGE',
+            payload: { jobId, status: 'BLOCKED_CAPTCHA', errorReason: '终审检测到人机验证，请人工通过' },
+          });
+          return;
+        }
+        if (blocker === 'NOT_LOGGED_IN') {
+          send({
+            type: 'SYNTHESIS_STATUS_CHANGE',
+            payload: { jobId, status: 'BLOCKED_LOGIN', errorReason: '终审检测到未登录状态，请先登录 DeepSeek' },
+          });
+          return;
+        }
+
+        // 2. 标记状态为 SENDING
+        send({
+          type: 'SYNTHESIS_STATUS_CHANGE',
+          payload: { jobId, status: 'SENDING' },
+        });
+
+        // 3. 模拟写入并提交
+        const sent = await deepSeekAdapter.sendPrompt(metaPrompt);
+        if (!sent) {
+          send({
+            type: 'SYNTHESIS_STATUS_CHANGE',
+            payload: { jobId, status: 'FAILED', errorReason: '终审提示词注入或点击发送失败' },
+          });
+          return;
+        }
+
+        // 4. 校验提交状态
+        const validated = await deepSeekAdapter.validateSubmission();
+        if (!validated) {
+          send({
+            type: 'SYNTHESIS_STATUS_CHANGE',
+            payload: { jobId, status: 'FAILED', errorReason: '终审提交后会话未响应' },
+          });
+          return;
+        }
+
+        // 5. 标记为 STREAMING 并启动监听
+        send({
+          type: 'SYNTHESIS_STATUS_CHANGE',
+          payload: { jobId, status: 'STREAMING' },
+        });
+
+        if (stopListening) {
+          stopListening();
+        }
+
+        stopListening = deepSeekAdapter.listenGeneration(
+          (snapshot, cleaned) => {
+            send({
+              type: 'SYNTHESIS_STREAM_UPDATE',
+              payload: {
+                jobId,
+                snapshot: cleaned || snapshot,
+                isFinished: false,
+              },
+            });
+          },
+          (finalCleaned) => {
+            send({
+              type: 'SYNTHESIS_STREAM_UPDATE',
+              payload: {
+                jobId,
+                snapshot: finalCleaned,
+                isFinished: true,
+              },
+            });
+
+            send({
+              type: 'SYNTHESIS_STATUS_CHANGE',
+              payload: {
+                jobId,
+                status: 'DONE',
+                finalMarkdown: finalCleaned,
+              },
+            });
+          }
+        );
       }
     });
 
