@@ -1,25 +1,44 @@
-import React, { useState } from 'react';
-import type { SynthesisRun, ProviderStatus } from '../lib/types/review-job';
-import { Sparkles, Copy, Check, ChevronDown, ChevronUp, Bot, ExternalLink } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import type { SynthesisRun, ProviderStatus, ReviewJob } from '../lib/types/review-job';
+import {
+  Sparkles,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Eye,
+  EyeOff,
+  Download,
+  FileText,
+  FileCode,
+} from 'lucide-react';
+import {
+  revealModelIdentities,
+  sanitizeHtml,
+  exportJobAsJson,
+  exportReportAsMarkdown,
+} from '../lib/utils/markdown-viewer';
 
 interface SynthesisCardProps {
   synthesisRun?: SynthesisRun;
+  activeJob?: ReviewJob | null;
   onFocusSynthesisTab?: () => void;
 }
 
 export const SynthesisCard: React.FC<SynthesisCardProps> = ({
   synthesisRun,
-  onFocusSynthesisTab,
+  activeJob,
 }) => {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
+  const [revealIdentities, setRevealIdentities] = useState(false);
 
   if (!synthesisRun) return null;
 
   const handleCopy = async () => {
-    if (!synthesisRun.finalMarkdown) return;
+    if (!displayText) return;
     try {
-      await navigator.clipboard.writeText(synthesisRun.finalMarkdown);
+      await navigator.clipboard.writeText(displayText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
@@ -45,6 +64,16 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
   };
 
   const currentCfg = statusConfig[synthesisRun.status] || statusConfig.PENDING;
+
+  // 依据是否勾选“查看模型真身”动态转换正文
+  const displayText = useMemo(() => {
+    const raw = synthesisRun.finalMarkdown || '';
+    if (!raw) return '';
+    if (revealIdentities && synthesisRun.anonymousMap) {
+      return revealModelIdentities(raw, synthesisRun.anonymousMap);
+    }
+    return raw;
+  }, [synthesisRun.finalMarkdown, revealIdentities, synthesisRun.anonymousMap]);
 
   return (
     <div className="bg-linear-to-br from-indigo-50/70 via-white to-blue-50/70 dark:from-indigo-950/40 dark:via-slate-900 dark:to-blue-950/40 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl p-3 shadow-xs mb-3 transition-all">
@@ -78,10 +107,23 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
         </div>
       </div>
 
-      {/* 匿名打乱映射指示器（供用户追溯各 Model 真实对应） */}
+      {/* 匿名打乱映射指示器与揭晓开关 */}
       {Object.keys(synthesisRun.anonymousMap || {}).length > 0 && (
         <div className="mb-2.5 bg-white/80 dark:bg-slate-900/80 p-2 rounded-lg border border-indigo-100/60 dark:border-indigo-900/40 text-[10px]">
-          <span className="text-slate-400 font-medium block mb-1">各模型匿名盲审对照：</span>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-slate-400 font-medium">各模型匿名盲审对照：</span>
+            <button
+              onClick={() => setRevealIdentities(!revealIdentities)}
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                revealIdentities
+                  ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+              }`}
+            >
+              {revealIdentities ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+              <span>{revealIdentities ? '隐藏模型真身' : '查看模型真身'}</span>
+            </button>
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {Object.entries(synthesisRun.anonymousMap).map(([label, site]) => (
               <span
@@ -98,9 +140,9 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
       {/* 终审正文内容 */}
       {isExpanded && (
         <div className="relative">
-          {synthesisRun.finalMarkdown ? (
+          {displayText ? (
             <div className="bg-white/90 dark:bg-slate-900/90 rounded-lg p-3 border border-slate-200/80 dark:border-slate-800 max-h-72 overflow-y-auto text-xs leading-relaxed font-sans whitespace-pre-wrap select-text">
-              {synthesisRun.finalMarkdown}
+              {displayText}
             </div>
           ) : (
             <div className="text-center py-6 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800">
@@ -111,13 +153,36 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
           )}
 
           {synthesisRun.finalMarkdown && (
-            <div className="flex items-center justify-end gap-2 mt-2">
+            <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/60">
+              <div className="flex items-center gap-1.5">
+                {activeJob && (
+                  <>
+                    <button
+                      onClick={() => exportReportAsMarkdown(activeJob, revealIdentities)}
+                      className="px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                      title="下载聚合报告 Markdown 文件"
+                    >
+                      <FileText className="w-3 h-3 text-blue-500" />
+                      <span>MD 报告</span>
+                    </button>
+                    <button
+                      onClick={() => exportJobAsJson(activeJob)}
+                      className="px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                      title="下载完整任务快照 JSON 文件"
+                    >
+                      <FileCode className="w-3 h-3 text-purple-500" />
+                      <span>JSON 快照</span>
+                    </button>
+                  </>
+                )}
+              </div>
+
               <button
                 onClick={handleCopy}
-                className="px-2.5 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
               >
-                {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
-                <span>{copied ? '已复制' : '复制终审报告'}</span>
+                {copied ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                <span>{copied ? '已复制' : '复制定稿'}</span>
               </button>
             </div>
           )}

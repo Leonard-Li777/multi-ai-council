@@ -231,6 +231,30 @@ export async function getJobHistory(limit = 20): Promise<ReviewJob[]> {
 }
 
 /**
+ * 清空所有历史任务
+ */
+export async function clearAllHistory(): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.clear('jobs');
+  } catch (err) {
+    console.error('[JobStore] Failed to clear all jobs from IndexedDB', err);
+  }
+}
+
+/**
+ * 删除单个历史任务
+ */
+export async function deleteJob(jobId: string): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.delete('jobs', jobId);
+  } catch (err) {
+    console.error('[JobStore] Failed to delete job from IndexedDB', err);
+  }
+}
+
+/**
  * 保存指定站点的活跃会话映射（同时双写 session 与 IndexedDB）
  */
 export async function saveConversationRef(ref: ProviderConversationRef): Promise<void> {

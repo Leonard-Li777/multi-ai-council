@@ -18,13 +18,14 @@ import { PromptInput } from '../../components/PromptInput';
 import { SiteStatusCard } from '../../components/SiteStatusCard';
 import { SynthesisCard } from '../../components/SynthesisCard';
 import { JobControls } from '../../components/JobControls';
+import { HistoryDrawer } from '../../components/HistoryDrawer';
 import { detectContinuation } from '../../lib/utils/continuation-detector';
 import {
   calculateQuorumProgress,
   calculateDefaultMinQuorum,
   isJobTimedOut,
 } from '../../lib/utils/quorum-calculator';
-import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward } from 'lucide-react';
+import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward, History } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
@@ -33,6 +34,7 @@ export const App: React.FC = () => {
   const [lastPrompt, setLastPrompt] = useState<string>('');
   const [activeConvUrl, setActiveConvUrl] = useState<string>('');
   const [manualOverride, setManualOverride] = useState<boolean | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
 
   const portSendRef = useRef<((msg: PortMessage) => void) | null>(null);
 
@@ -216,6 +218,13 @@ export const App: React.FC = () => {
       activeJob.synthesisRun?.status === 'SENDING' ||
       activeJob.synthesisRun?.status === 'STREAMING');
 
+  // 选择并重载历史任务
+  const handleSelectHistoryJob = async (job: ReviewJob) => {
+    setActiveJob(job);
+    setPromptText(job.originalPrompt);
+    await saveActiveJob(job);
+  };
+
   return (
     <div className="flex flex-col min-h-screen p-3.5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-xs">
       {/* 顶部标题栏 */}
@@ -232,9 +241,20 @@ export const App: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-full font-medium border border-emerald-200/50 dark:border-emerald-800/50">
-          <ShieldCheck className="w-3 h-3" />
-          <span>本地双层持久化</span>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setIsHistoryOpen(true)}
+            className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 bg-white dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-800 transition-colors cursor-pointer shadow-2xs"
+            title="查看历史任务与终审存档"
+          >
+            <History className="w-3 h-3 text-blue-500" />
+            <span>历史</span>
+          </button>
+
+          <div className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-full font-medium border border-emerald-200/50 dark:border-emerald-800/50">
+            <ShieldCheck className="w-3 h-3" />
+            <span>本地双写</span>
+          </div>
         </div>
       </div>
 
@@ -277,7 +297,10 @@ export const App: React.FC = () => {
 
       {/* 终审综合聚合报告卡片 */}
       {activeJob?.synthesisRun && (
-        <SynthesisCard synthesisRun={activeJob.synthesisRun} />
+        <SynthesisCard
+          synthesisRun={activeJob.synthesisRun}
+          activeJob={activeJob}
+        />
       )}
 
       {/* 任务状态卡片矩阵 */}
@@ -318,6 +341,13 @@ export const App: React.FC = () => {
             ? `已就绪 ${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站点（满足 Quorum ${quorumProgress.minRequired}），点击立即跳过剩余站点发起终审`
             : `Quorum 降级门槛：至少完成 ${quorumProgress?.minRequired || 1} 站点`
         }
+      />
+      {/* 历史任务抽屉 */}
+      <HistoryDrawer
+        isOpen={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        onSelectJob={handleSelectHistoryJob}
+        currentJobId={activeJob?.id}
       />
     </div>
   );
