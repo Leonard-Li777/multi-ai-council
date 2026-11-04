@@ -13,6 +13,8 @@ export type PortMessage =
   | { type: 'CANCEL_JOB'; payload: { jobId: string } }
   | { type: 'FOCUS_TAB'; payload: { siteName: SupportedSite } }
   | { type: 'RETRY_SITE'; payload: { siteName: SupportedSite } }
+  | { type: 'SKIP_SITE'; payload: { jobId?: string; siteName: SupportedSite; reason?: string } }
+  | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string } }
 
   // Background -> Side Panel
   | { type: 'JOB_SYNC'; payload: { job: ReviewJob } }

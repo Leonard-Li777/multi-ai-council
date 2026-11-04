@@ -129,13 +129,57 @@ async function updateRunInternal(
     retryCount: 0,
   };
 
+  // 终态保护：一旦被 CANCELED 或 TAB_CLOSED，忽略后续迟到的流式 STREAMING / DONE 状态覆写
+  const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED';
+  const isReactivation =
+    update.status === 'PENDING' || update.status === 'OPENING_TAB' || update.status === 'WAITING_READY';
+
+  const newStatus = isTerminal && !isReactivation ? currentRun.status : (update.status ?? currentRun.status);
+
   job.providerRuns[siteName] = {
     ...currentRun,
     ...update,
+    status: newStatus,
   };
 
   await saveActiveJob(job);
   return job;
+}
+
+/**
+ * 批量原子更新多个站点的状态，避免循环顺序多次落盘
+ */
+export async function batchUpdateProviderRuns(
+  jobId: string,
+  updates: Partial<Record<SupportedSite, Partial<ProviderRun>>>
+): Promise<ReviewJob | null> {
+  const job = await getActiveJob();
+  const targetJob = job && job.id === jobId ? job : await (await getDB()).get('jobs', jobId);
+  if (!targetJob) return null;
+
+  for (const [siteName, update] of Object.entries(updates) as [SupportedSite, Partial<ProviderRun>][]) {
+    const currentRun = targetJob.providerRuns[siteName] || {
+      siteName,
+      status: 'PENDING',
+      responseSnapshot: '',
+      cleanedResponse: '',
+      retryCount: 0,
+    };
+
+    const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED';
+    const isReactivation =
+      update.status === 'PENDING' || update.status === 'OPENING_TAB' || update.status === 'WAITING_READY';
+    const newStatus = isTerminal && !isReactivation ? currentRun.status : (update.status ?? currentRun.status);
+
+    targetJob.providerRuns[siteName] = {
+      ...currentRun,
+      ...update,
+      status: newStatus,
+    };
+  }
+
+  await saveActiveJob(targetJob);
+  return targetJob;
 }
 
 /**

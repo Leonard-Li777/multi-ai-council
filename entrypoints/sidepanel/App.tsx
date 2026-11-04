@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import type { ReviewJob, SupportedSite, ProviderRun } from '../../lib/types/review-job';
 import {
   getActiveJob,
@@ -18,7 +18,12 @@ import { PromptInput } from '../../components/PromptInput';
 import { SiteStatusCard } from '../../components/SiteStatusCard';
 import { JobControls } from '../../components/JobControls';
 import { detectContinuation } from '../../lib/utils/continuation-detector';
-import { Layers, ShieldCheck, Sparkles } from 'lucide-react';
+import {
+  calculateQuorumProgress,
+  calculateDefaultMinQuorum,
+  isJobTimedOut,
+} from '../../lib/utils/quorum-calculator';
+import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
@@ -123,9 +128,9 @@ export const App: React.FC = () => {
       isContinuation,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      deadlineAt: Date.now() + 120000, // 2 分钟超时保护
+      deadlineAt: Date.now() + 90000, // 90 秒超时保护
       aggregationPolicy: {
-        minCompletedProviders: Math.min(3, selectedSites.length),
+        minCompletedProviders: calculateDefaultMinQuorum(selectedSites.length),
         allowPartialAggregation: true,
         judgeProvider: 'DeepSeek',
         enabledSites: selectedSites,
@@ -167,6 +172,35 @@ export const App: React.FC = () => {
     }
   };
 
+  // 跳过单个站点
+  const handleSkipSite = (siteName: SupportedSite) => {
+    if (portSendRef.current) {
+      portSendRef.current({ type: 'SKIP_SITE', payload: { siteName, jobId: activeJob?.id } });
+    }
+  };
+
+  // Quorum 快速降级终审
+  const handleFastForward = () => {
+    if (portSendRef.current && activeJob) {
+      portSendRef.current({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
+    }
+  };
+
+  // 定期驱动时间刷新以触发 90s 超时检查（仅当任务激活时定时刷新）
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  useEffect(() => {
+    if (!activeJob || !activeJob.active) return;
+    const timer = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeJob?.active]);
+
+  const quorumProgress = useMemo(() => {
+    if (!activeJob) return null;
+    return calculateQuorumProgress(activeJob);
+  }, [activeJob]);
+
+  const isTimedOut = activeJob ? isJobTimedOut(activeJob, currentTime) : false;
+
   const isRunning =
     activeJob !== null &&
     Object.values(activeJob.providerRuns).some(
@@ -187,7 +221,9 @@ export const App: React.FC = () => {
           </div>
           <div>
             <h1 className="font-bold text-xs leading-none">Multi-AI Council</h1>
-            <span className="text-[10px] text-slate-400">第一阶段：DeepSeek 单站闭环</span>
+            <span className="text-[10px] text-slate-400">
+              Quorum: {quorumProgress ? `${quorumProgress.completedCount}/${quorumProgress.minRequired} 门槛` : '就绪'}
+            </span>
           </div>
         </div>
 
@@ -196,6 +232,25 @@ export const App: React.FC = () => {
           <span>本地双层持久化</span>
         </div>
       </div>
+
+      {/* 90秒超时提示与快速降级栏 */}
+      {isTimedOut && quorumProgress && !quorumProgress.isAllSettled && (
+        <div className="bg-amber-50 dark:bg-amber-950/80 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 p-2.5 rounded-xl mb-3 flex items-center justify-between text-xs animate-pulse">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span>已达超时时间（90秒）。已就绪 {quorumProgress.completedCount} 站。</span>
+          </div>
+          {quorumProgress.completedCount > 0 && (
+            <button
+              onClick={handleFastForward}
+              className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+            >
+              <FastForward className="w-3 h-3" />
+              立即降级终审
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 站点选择与开启/关闭 */}
       <SiteChecklist
@@ -235,6 +290,7 @@ export const App: React.FC = () => {
             run={activeJob?.providerRuns[site]}
             onFocusTab={() => handleFocusTab(site)}
             onRetry={() => handleRetry(site)}
+            onSkip={() => handleSkipSite(site)}
           />
         ))}
       </div>
@@ -245,6 +301,13 @@ export const App: React.FC = () => {
         onClear={handleClear}
         isRunning={isRunning}
         canStart={promptText.trim().length > 0}
+        canFastForward={quorumProgress?.canFastForward || false}
+        onFastForward={handleFastForward}
+        fastForwardTooltip={
+          quorumProgress?.canFastForward
+            ? `已就绪 ${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站点（满足 Quorum ${quorumProgress.minRequired}），点击立即跳过剩余站点发起终审`
+            : `Quorum 降级门槛：至少完成 ${quorumProgress?.minRequired || 1} 站点`
+        }
       />
     </div>
   );

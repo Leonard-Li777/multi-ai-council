@@ -9,6 +9,7 @@ import {
   RotateCcw,
   ShieldAlert,
   XCircle,
+  SkipForward,
 } from 'lucide-react';
 
 interface SiteStatusCardProps {
@@ -16,6 +17,7 @@ interface SiteStatusCardProps {
   siteName: string;
   onFocusTab: () => void;
   onRetry: () => void;
+  onSkip?: () => void;
 }
 
 const STATUS_CONFIG: Record<
@@ -43,6 +45,7 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
   siteName,
   onFocusTab,
   onRetry,
+  onSkip,
 }) => {
   const status = run?.status || 'PENDING';
   const cfg = STATUS_CONFIG[status];
@@ -56,6 +59,15 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
     status === 'BLOCKED_LOGIN' ||
     status === 'FAILED' ||
     status === 'TAB_CLOSED';
+
+  const canSkip =
+    status === 'WAITING_READY' ||
+    status === 'SENDING' ||
+    status === 'STREAMING' ||
+    status === 'BLOCKED_CAPTCHA' ||
+    status === 'BLOCKED_LOGIN' ||
+    status === 'RATE_LIMITED' ||
+    status === 'TIMEOUT';
 
   return (
     <div
@@ -81,6 +93,16 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
         </div>
 
         <div className="flex items-center gap-1">
+          {canSkip && onSkip && (
+            <button
+              type="button"
+              onClick={onSkip}
+              title="跳过此站点等待，避免阻塞终审"
+              className="p-1 rounded text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/60 transition-colors cursor-pointer"
+            >
+              <SkipForward className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             type="button"
             onClick={onFocusTab}

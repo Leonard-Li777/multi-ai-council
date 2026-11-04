@@ -6,6 +6,9 @@ interface JobControlsProps {
   onClear: () => void;
   isRunning: boolean;
   canStart: boolean;
+  canFastForward?: boolean;
+  onFastForward?: () => void;
+  fastForwardTooltip?: string;
 }
 
 export const JobControls: React.FC<JobControlsProps> = ({
@@ -13,6 +16,9 @@ export const JobControls: React.FC<JobControlsProps> = ({
   onClear,
   isRunning,
   canStart,
+  canFastForward = false,
+  onFastForward,
+  fastForwardTooltip = 'Quorum 快速降级终审',
 }) => {
   return (
     <div className="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
@@ -39,12 +45,17 @@ export const JobControls: React.FC<JobControlsProps> = ({
         )}
       </button>
 
-      {/* Quorum 降级占位按钮（第1步明确占位） */}
+      {/* Quorum 快速降级按钮 */}
       <button
         type="button"
-        disabled
-        title="Quorum 快速降级（第4步聚合接入）"
-        className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-300 dark:text-slate-600 cursor-not-allowed"
+        disabled={!canFastForward}
+        onClick={onFastForward}
+        title={fastForwardTooltip}
+        className={`p-2.5 rounded-xl border transition-all ${
+          canFastForward
+            ? 'bg-amber-500 hover:bg-amber-600 text-white border-amber-600 shadow-xs cursor-pointer active:scale-95 animate-pulse'
+            : 'border-slate-200 dark:border-slate-800 text-slate-300 dark:text-slate-700 cursor-not-allowed'
+        }`}
       >
         <FastForward className="w-4 h-4" />
       </button>
@@ -53,7 +64,7 @@ export const JobControls: React.FC<JobControlsProps> = ({
         type="button"
         onClick={onClear}
         title="清空当前任务状态与快照"
-        className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors"
+        className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors cursor-pointer"
       >
         <Trash2 className="w-4 h-4" />
       </button>

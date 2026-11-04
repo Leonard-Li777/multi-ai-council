@@ -8,10 +8,11 @@ import {
   getActiveJob,
   saveActiveJob,
   updateProviderRun,
+  batchUpdateProviderRuns,
   saveConversationRef,
   getConversationRef,
 } from '../lib/storage/job-store';
-import type { ReviewJob, SupportedSite, ProviderConversationRef } from '../lib/types/review-job';
+import type { ReviewJob, SupportedSite, ProviderConversationRef, ProviderRun } from '../lib/types/review-job';
 import { extractConversationId, getTargetDispatchUrl } from '../lib/utils/conversation-helper';
 
 export default defineBackground(() => {
@@ -57,6 +58,44 @@ export default defineBackground(() => {
           const activeJob = await getActiveJob();
           if (activeJob) {
             await dispatchToSite(msg.payload.siteName, activeJob.id, activeJob.originalPrompt, activeJob.isContinuation);
+          }
+        } else if (msg.type === 'SKIP_SITE') {
+          const activeJob = await getActiveJob();
+          if (activeJob && (!msg.payload.jobId || activeJob.id === msg.payload.jobId)) {
+            contentPorts.delete(msg.payload.siteName);
+            const updated = await updateProviderRun(activeJob.id, msg.payload.siteName, {
+              status: 'CANCELED',
+              errorReason: msg.payload.reason || '用户手动跳过等待',
+              completedAt: Date.now(),
+            });
+            if (updated && sidePanelPort) {
+              sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+            }
+          }
+        } else if (msg.type === 'FAST_FORWARD_QUORUM') {
+          const activeJob = await getActiveJob();
+          if (activeJob && activeJob.id === msg.payload.jobId) {
+            const batchUpdates: Partial<Record<SupportedSite, Partial<ProviderRun>>> = {};
+            for (const [site, run] of Object.entries(activeJob.providerRuns)) {
+              if (
+                run.status === 'PENDING' ||
+                run.status === 'OPENING_TAB' ||
+                run.status === 'WAITING_READY' ||
+                run.status === 'SENDING' ||
+                run.status === 'STREAMING'
+              ) {
+                contentPorts.delete(site as SupportedSite);
+                batchUpdates[site as SupportedSite] = {
+                  status: 'CANCELED',
+                  errorReason: '提前降级终审跳过',
+                  completedAt: Date.now(),
+                };
+              }
+            }
+            const updated = await batchUpdateProviderRuns(activeJob.id, batchUpdates);
+            if (updated && sidePanelPort) {
+              sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+            }
           }
         }
       });
