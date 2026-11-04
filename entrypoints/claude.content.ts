@@ -1,0 +1,173 @@
+import { defineContentScript } from 'wxt/utils/define-content-script';
+import { claudeAdapter } from '../lib/adapters/claude.adapter';
+import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+
+export default defineContentScript({
+  matches: ['https://claude.ai/*'],
+  runAt: 'document_idle',
+  main() {
+    console.log('[Multi-AI Council] Claude content script initialized');
+
+    let stopListening: (() => void) | null = null;
+    let currentJobId: string | null = null;
+
+    // 建立带心跳的长连接
+    const { send } = setupPortWithHeartbeat(CONTENT_PORT_NAME, async (msg: PortMessage) => {
+      if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Claude') {
+        const { jobId, prompt, isContinuation } = msg.payload;
+        currentJobId = jobId;
+
+        console.log(`[ClaudeContent] Received prompt for Job ${jobId}, continuation=${isContinuation}`);
+
+        // 1. 检查页面阻断状态
+        const blocker = await claudeAdapter.checkBlocker();
+        if (blocker === 'CAPTCHA') {
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'Claude',
+              jobId,
+              status: 'BLOCKED_CAPTCHA',
+              errorReason: '检测到 Cloudflare 人机验证，请人工通过',
+            },
+          });
+          return;
+        }
+        if (blocker === 'NOT_LOGGED_IN') {
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'Claude',
+              jobId,
+              status: 'BLOCKED_LOGIN',
+              errorReason: '检测到未登录状态，请先登录 Claude',
+            },
+          });
+          return;
+        }
+        if (blocker === 'RATE_LIMIT') {
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'Claude',
+              jobId,
+              status: 'RATE_LIMITED',
+              errorReason: 'Claude 当前遭遇额度或频次限制',
+            },
+          });
+          return;
+        }
+
+        // 2. 若明确为新会话，执行新建
+        if (!isContinuation) {
+          await claudeAdapter.createNewChat();
+        }
+
+        // 3. 标记状态为 SENDING
+        send({
+          type: 'STATUS_CHANGE',
+          payload: { siteName: 'Claude', jobId, status: 'SENDING' },
+        });
+
+        // 4. 模拟写入与提交
+        const sent = await claudeAdapter.sendPrompt(prompt);
+        if (!sent) {
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Claude', jobId, status: 'FAILED', errorReason: 'ProseMirror 输入框注入或点击发送失败' },
+          });
+          return;
+        }
+
+        // 5. 校验提交状态
+        const validated = await claudeAdapter.validateSubmission();
+        if (!validated) {
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Claude', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
+          });
+          return;
+        }
+
+        // 6. 标记为 STREAMING 并启动监听
+        send({
+          type: 'STATUS_CHANGE',
+          payload: { siteName: 'Claude', jobId, status: 'STREAMING' },
+        });
+
+        if (stopListening) {
+          stopListening();
+        }
+
+        stopListening = claudeAdapter.listenGeneration(
+          (snapshot, cleaned) => {
+            send({
+              type: 'STREAM_UPDATE',
+              payload: {
+                siteName: 'Claude',
+                jobId,
+                snapshot,
+                cleaned,
+                isFinished: false,
+              },
+            });
+          },
+          (finalCleaned) => {
+            const finalUrl = claudeAdapter.getConversationUrl();
+            send({
+              type: 'STREAM_UPDATE',
+              payload: {
+                siteName: 'Claude',
+                jobId,
+                snapshot: finalCleaned,
+                cleaned: finalCleaned,
+                isFinished: true,
+              },
+            });
+
+            send({
+              type: 'STATUS_CHANGE',
+              payload: {
+                siteName: 'Claude',
+                jobId,
+                status: 'DONE',
+                conversationUrl: finalUrl,
+              },
+            });
+          }
+        );
+      }
+    });
+
+    // 页面加载完成后，向后台报告 Ready
+    send({
+      type: 'CONTENT_READY',
+      payload: {
+        siteName: 'Claude',
+        url: window.location.href,
+      },
+    });
+
+    // 监听 URL 变化（如 Claude 从 / 或 /new 变为 /chat/:id），实时同步会话引用
+    let lastUrl = window.location.href;
+    const urlCheckInterval = window.setInterval(() => {
+      if (window.location.href !== lastUrl) {
+        lastUrl = window.location.href;
+        send({
+          type: 'UPDATE_CONVERSATION_URL',
+          payload: {
+            siteName: 'Claude',
+            jobId: currentJobId || undefined,
+            conversationUrl: lastUrl,
+          },
+        });
+      }
+    }, 1000);
+
+    // 卸载时清理监听
+    window.addEventListener('beforeunload', () => {
+      if (stopListening) stopListening();
+      clearInterval(urlCheckInterval);
+    });
+  },
+});

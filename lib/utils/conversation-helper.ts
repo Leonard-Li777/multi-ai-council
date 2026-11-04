@@ -23,10 +23,15 @@ export function extractConversationId(url: string): string | null {
       return deepseekMatch[1] ?? null;
     }
 
-    // 通用路径匹配：提取最后一段非空路径作为 ID 候选
+    // 通用路径匹配：提取会话 ID 候选
     const parts = parsed.pathname.split('/').filter(Boolean);
+    // ChatGPT / Qwen: /c/:id
     if (parts.length >= 2 && parts[0] === 'c') {
-      return parts[1] ?? null; // ChatGPT: /c/:id
+      return parts[1] ?? null;
+    }
+    // Claude: /chat/:id
+    if (parts.length >= 2 && parts[0] === 'chat') {
+      return parts[1] ?? null;
     }
 
     return null;
