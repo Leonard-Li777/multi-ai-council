@@ -13,7 +13,21 @@ import {
   getConversationRef,
 } from '../lib/storage/job-store';
 import type { ReviewJob, SupportedSite, ProviderConversationRef, ProviderRun } from '../lib/types/review-job';
-import { extractConversationId, getTargetDispatchUrl } from '../lib/utils/conversation-helper';
+import {
+  extractConversationId,
+  getTargetDispatchUrl,
+  SITE_BASE_URLS,
+} from '../lib/utils/conversation-helper';
+
+const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
+  DeepSeek: ['*://chat.deepseek.com/*'],
+  ChatGPT: ['*://chatgpt.com/*'],
+  Claude: ['*://claude.ai/*'],
+  Gemini: ['*://gemini.google.com/*'],
+  Qwen: ['*://chat.qwen.ai/*'],
+  Wenxin: ['*://wenxin.baidu.com/*'],
+  ChatGLM: ['*://chatglm.cn/*'],
+};
 
 export default defineBackground(() => {
   console.log('[Multi-AI Council] Background Service Worker initialized');
@@ -45,14 +59,19 @@ export default defineBackground(() => {
             tabId = activeJob?.providerRuns[msg.payload.siteName]?.tabId;
           }
           if (!tabId) {
-            const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
+            const queryPatterns = SITE_QUERY_PATTERNS[msg.payload.siteName] || ['*://chat.deepseek.com/*'];
+            const tabs = await chrome.tabs.query({ url: queryPatterns });
             if (tabs.length > 0 && tabs[0]?.id) {
               tabId = tabs[0].id;
               siteTabs.set(msg.payload.siteName, tabId);
             }
           }
           if (tabId) {
-            chrome.tabs.update(tabId, { active: true });
+            chrome.tabs.update(tabId, { active: true }, (tab) => {
+              if (tab?.windowId) {
+                chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+              }
+            });
           }
         } else if (msg.type === 'RETRY_SITE') {
           const activeJob = await getActiveJob();
@@ -225,11 +244,9 @@ export default defineBackground(() => {
       sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job } });
     }
 
-    // 针对启用的站点逐一调度（首版仅 DeepSeek）
+    // 针对启用的所有站点逐一调度与创建/复用标签页
     for (const siteName of job.aggregationPolicy.enabledSites) {
-      if (siteName === 'DeepSeek') {
-        await ensureSiteTabAndDispatch(siteName, job);
-      }
+      await ensureSiteTabAndDispatch(siteName, job);
     }
   }
 
@@ -237,9 +254,11 @@ export default defineBackground(() => {
     // 0. 读取历史会话引用并解析目标分发 URL
     const existingRef = await getConversationRef(siteName);
     const targetUrl = getTargetDispatchUrl(siteName, job.isContinuation, existingRef || undefined);
+    const baseUrl = SITE_BASE_URLS[siteName] || 'https://chat.deepseek.com/';
 
-    // 1. 查找是否已有打开的 DeepSeek 标签
-    const tabs = await chrome.tabs.query({ url: '*://chat.deepseek.com/*' });
+    // 1. 查找是否已有打开的对应站点标签页
+    const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['*://chat.deepseek.com/*'];
+    const tabs = await chrome.tabs.query({ url: queryPatterns });
     let targetTab: chrome.tabs.Tab | undefined;
     let isNavigating = false;
 
@@ -247,9 +266,9 @@ export default defineBackground(() => {
       targetTab = tabs[0];
       siteTabs.set(siteName, tabs[0].id);
 
-      // 若需要开启新会话且当前留在旧会话 /s/... 路径，或者需要延续且不在对应会话 URL
+      // 若需要开启新会话且当前留在旧会话路径，或者需要延续且不在对应会话 URL
       if (targetTab.url && targetTab.url !== targetUrl) {
-        if (!job.isContinuation && targetTab.url !== 'https://chat.deepseek.com/') {
+        if (!job.isContinuation && targetTab.url !== baseUrl) {
           isNavigating = true;
           contentPorts.delete(siteName); // 提前注销即将失效的旧页面 Port
           await chrome.tabs.update(targetTab.id, { url: targetUrl });

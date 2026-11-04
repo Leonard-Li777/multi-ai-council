@@ -1,4 +1,5 @@
 import type { AISiteAdapter } from './base';
+import { adapterRegistry } from './base';
 import type { SupportedSite } from '../types/review-job';
 import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
@@ -208,3 +209,4 @@ export class DeepSeekAdapter implements AISiteAdapter {
 }
 
 export const deepSeekAdapter = new DeepSeekAdapter();
+adapterRegistry.register(deepSeekAdapter);

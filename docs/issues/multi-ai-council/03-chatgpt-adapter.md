@@ -1,6 +1,6 @@
 # Ticket 03: ChatGPT 站点适配器研发
 
-- **状态**: ready-for-agent
+- **状态**: completed
 - **环级归属**: 第 4 环 (L4 Context & History)
 - **父级目标**: [Multi-AI Council 深度技术规格书](../../specs/multi-ai-council-spec.md)
 
@@ -11,8 +11,8 @@
 - 依赖工单：[01-multi-turn-and-conversation-ref.md](./01-multi-turn-and-conversation-ref.md)
 
 **验收准则 (Acceptance criteria):**
-- [ ] `ChatGPTAdapter` 实现 `AISiteAdapter` 标准契约（含多级选择器降级）。
-- [ ] 成功向 `div#prompt-textarea` 注入文本并触发提交，发送按钮由禁用成功变为可用并被触发。
-- [ ] 流式过程中实时回传回答快照至 Side Panel，正确监听停止生成按钮与完成状态。
-- [ ] 回复内容通过 `domToMarkdown` 提取，代码块、语法高亮类名和排版无损保留。
-- [ ] WXT manifest `host_permissions` 与 content_scripts 新增 `https://chatgpt.com/*`。
+- [x] `ChatGPTAdapter` 实现 `AISiteAdapter` 标准契约（含多级选择器降级）。
+- [x] 成功向 `div#prompt-textarea` 注入文本并触发提交，发送按钮由禁用成功变为可用并被触发。
+- [x] 流式过程中实时回传回答快照至 Side Panel，正确监听停止生成按钮与完成状态。
+- [x] 回复内容通过 `domToMarkdown` 提取，代码块、语法高亮类名和排版无损保留。
+- [x] WXT manifest `host_permissions` 与 content_scripts 新增 `https://chatgpt.com/*`。
