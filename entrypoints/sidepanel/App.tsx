@@ -26,7 +26,7 @@ import {
   calculateDefaultMinQuorum,
   isJobTimedOut,
 } from '../../lib/utils/quorum-calculator';
-import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward, History } from 'lucide-react';
+import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward, History, RotateCcw } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
@@ -179,18 +179,28 @@ export const App: React.FC = () => {
     setManualOverride(null);
   };
 
-  // 聚焦标签页
+  // 聚焦标签页（若不存在则自动创建）
   const handleFocusTab = (siteName: SupportedSite) => {
     if (portSendRef.current) {
       portSendRef.current({ type: 'FOCUS_TAB', payload: { siteName } });
     }
+    sendToBackground({ type: 'FOCUS_TAB', payload: { siteName } });
   };
 
-  // 重试单站
+  // 一键打开所有勾选站点窗口（方便用户预先登录）
+  const handleOpenAllSites = (sitesToOpen = selectedSites) => {
+    if (portSendRef.current) {
+      portSendRef.current({ type: 'OPEN_SITES', payload: { sites: sitesToOpen } });
+    }
+    sendToBackground({ type: 'OPEN_SITES', payload: { sites: sitesToOpen } });
+  };
+
+  // 重试单站（例如登录完成后重新提交）
   const handleRetry = (siteName: SupportedSite) => {
     if (portSendRef.current) {
       portSendRef.current({ type: 'RETRY_SITE', payload: { siteName } });
     }
+    sendToBackground({ type: 'RETRY_SITE', payload: { siteName } });
   };
 
   // 跳过单个站点
@@ -198,13 +208,30 @@ export const App: React.FC = () => {
     if (portSendRef.current) {
       portSendRef.current({ type: 'SKIP_SITE', payload: { siteName, jobId: activeJob?.id } });
     }
+    sendToBackground({ type: 'SKIP_SITE', payload: { siteName, jobId: activeJob?.id } });
   };
 
   // Quorum 快速降级终审
   const handleFastForward = () => {
-    if (portSendRef.current && activeJob) {
-      portSendRef.current({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
+    if (activeJob) {
+      if (portSendRef.current) {
+        portSendRef.current({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
+      }
+      sendToBackground({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
     }
+  };
+
+  // 延长生成超时时间 (+90s)
+  const handleExtendTimeout = async () => {
+    if (!activeJob) return;
+    const newDeadline = Date.now() + 90000;
+    const updated = { ...activeJob, deadlineAt: newDeadline };
+    setActiveJob(updated);
+    await saveActiveJob(updated);
+    if (portSendRef.current) {
+      portSendRef.current({ type: 'EXTEND_TIMEOUT', payload: { jobId: activeJob.id, extraSeconds: 90 } });
+    }
+    await sendToBackground({ type: 'EXTEND_TIMEOUT', payload: { jobId: activeJob.id, extraSeconds: 90 } });
   };
 
   // 定期驱动时间刷新以触发 90s 超时检查（仅当任务激活时定时刷新）
@@ -221,6 +248,13 @@ export const App: React.FC = () => {
   }, [activeJob]);
 
   const isTimedOut = activeJob ? isJobTimedOut(activeJob, currentTime) : false;
+
+  const hasBlockedLogin = useMemo(() => {
+    if (!activeJob) return false;
+    return Object.values(activeJob.providerRuns).some(
+      (run) => run.status === 'BLOCKED_LOGIN' || run.status === 'BLOCKED_CAPTCHA'
+    );
+  }, [activeJob]);
 
   const isSynthesisRunning =
     activeJob?.synthesisRun?.status === 'OPENING_TAB' ||
@@ -273,22 +307,42 @@ export const App: React.FC = () => {
         </div>
       </div>
 
-      {/* 90秒超时提示与快速降级栏 */}
+      {/* 90秒超时提示与快速降级/延长等待栏 */}
       {isTimedOut && quorumProgress && !quorumProgress.isAllSettled && (
-        <div className="bg-amber-50 dark:bg-amber-950/80 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 p-2.5 rounded-xl mb-3 flex items-center justify-between text-xs animate-pulse">
-          <div className="flex items-center gap-2">
+        <div className="bg-amber-50 dark:bg-amber-950/80 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 p-2.5 rounded-xl mb-3 flex items-center justify-between text-xs gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span>已达超时时间（90秒）。已就绪 {quorumProgress.completedCount} 站。</span>
+            <div className="min-w-0">
+              <div className="font-semibold truncate">
+                {hasBlockedLogin
+                  ? '等待登录中：请在对应站点窗口中完成登录'
+                  : `已达超时时间（90秒）。已就绪 ${quorumProgress.completedCount} 站。`}
+              </div>
+              <div className="text-[10px] text-amber-700/90 dark:text-amber-300/90">
+                可先在打开的窗口中登录，登录后点击卡片【已登录重试】或点击右侧【+90秒】
+              </div>
+            </div>
           </div>
-          {quorumProgress.completedCount > 0 && (
+
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={handleFastForward}
-              className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+              onClick={handleExtendTimeout}
+              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+              title="延长 90 秒等待时间"
             >
-              <FastForward className="w-3 h-3" />
-              立即降级终审
+              <RotateCcw className="w-3 h-3" />
+              +90秒
             </button>
-          )}
+            {quorumProgress.completedCount > 0 && (
+              <button
+                onClick={handleFastForward}
+                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+              >
+                <FastForward className="w-3 h-3" />
+                立即终审
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -296,6 +350,8 @@ export const App: React.FC = () => {
       <SiteChecklist
         selectedSites={selectedSites}
         onChange={handleSitesChange}
+        onOpenSite={handleFocusTab}
+        onOpenAllSites={() => handleOpenAllSites(selectedSites)}
         disabled={isRunning}
       />
 

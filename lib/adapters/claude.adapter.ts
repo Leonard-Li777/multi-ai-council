@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class ClaudeAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Claude';
@@ -33,11 +34,9 @@ export class ClaudeAdapter implements AISiteAdapter {
     if (captcha) return 'CAPTCHA';
 
     // 2. 未登录检查（如重定向至 /login）
-    if (window.location.pathname.startsWith('/login')) return 'NOT_LOGGED_IN';
-    const loginBtn = document.querySelector(
-      'a[href*="/login"], button:has-text("Log In"), button:has-text("Sign Up"), a[href*="/signup"]'
-    );
-    if (loginBtn) return 'NOT_LOGGED_IN';
+    if (window.location.pathname.startsWith('/login') || window.location.pathname.startsWith('/signup')) return 'NOT_LOGGED_IN';
+    const loginLink = document.querySelector('a[href*="/login"], a[href*="/signup"]');
+    if (loginLink || hasElementWithText('button, a', ['Log In', 'Sign Up', 'Sign in', '登录'])) return 'NOT_LOGGED_IN';
 
     // 3. 限流 / 使用额度上限检查
     const limitBanner = document.querySelector(

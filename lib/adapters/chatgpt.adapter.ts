@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class ChatGPTAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'ChatGPT';
@@ -36,7 +37,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
     const loginBtn = document.querySelector(
       'button[data-testid="login-button"], a[href*="/auth/login"], a[href*="login"]'
     );
-    if (loginBtn) return 'NOT_LOGGED_IN';
+    if (loginBtn || hasElementWithText('button, a', ['Log in', 'Sign up', '登录'])) return 'NOT_LOGGED_IN';
 
     // 3. 限流 / 异常提示检查
     const errorBanner = document.querySelector(

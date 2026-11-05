@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class DeepSeekAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'DeepSeek';
@@ -27,8 +28,14 @@ export class DeepSeekAdapter implements AISiteAdapter {
    */
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
     // 1. 检查是否未登录
-    const loginBtn = document.querySelector('a[href*="/login"], button:has-text("登录"), button:has-text("Sign in")');
-    if (loginBtn) return 'NOT_LOGGED_IN';
+    if (
+      window.location.pathname.includes('/sign_in') ||
+      window.location.pathname.includes('/login') ||
+      document.querySelector('a[href*="/login"], a[href*="/sign_in"]') !== null ||
+      hasElementWithText('button, a, div[role="button"]', ['登录', 'Sign in', 'Log in'])
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
     // 2. 检查人机验证 (Cloudflare Turnstile / Geetest)
     const captcha = document.querySelector('iframe[src*="challenges.cloudflare.com"], #geetest_holder, div[class*="captcha"]');

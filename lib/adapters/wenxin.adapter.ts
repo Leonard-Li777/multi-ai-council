@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class WenxinAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Wenxin';
@@ -26,9 +27,9 @@ export class WenxinAdapter implements AISiteAdapter {
 
     // 2. 百度登录弹窗或未登录
     const loginModal = document.querySelector(
-      '#passport-login-pop, div[class*="login-dialog"], a[href*="passport.baidu.com"], span:has-text("登录")'
+      '#passport-login-pop, div[class*="login-dialog"], a[href*="passport.baidu.com"]'
     );
-    if (loginModal) return 'NOT_LOGGED_IN';
+    if (loginModal || hasElementWithText('button, a, span, div[class*="login"]', ['登录'])) return 'NOT_LOGGED_IN';
 
     // 3. 限流
     const limit = document.querySelector('div[class*="limit-tip"], div[class*="warn-text"]');

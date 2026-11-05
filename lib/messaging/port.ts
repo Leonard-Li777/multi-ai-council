@@ -12,10 +12,12 @@ export type PortMessage =
   | { type: 'START_JOB'; payload: { job: ReviewJob } }
   | { type: 'CANCEL_JOB'; payload: { jobId: string } }
   | { type: 'FOCUS_TAB'; payload: { siteName: SupportedSite } }
+  | { type: 'OPEN_SITES'; payload: { sites: SupportedSite[] } }
   | { type: 'RETRY_SITE'; payload: { siteName: SupportedSite } }
   | { type: 'SKIP_SITE'; payload: { jobId?: string; siteName: SupportedSite; reason?: string } }
   | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string } }
   | { type: 'TRIGGER_SYNTHESIS'; payload: { jobId: string } }
+  | { type: 'EXTEND_TIMEOUT'; payload: { jobId: string; extraSeconds: number } }
 
   // Background -> Side Panel
   | { type: 'JOB_SYNC'; payload: { job: ReviewJob } }

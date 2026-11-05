@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class QwenAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Qwen';
@@ -27,10 +28,8 @@ export class QwenAdapter implements AISiteAdapter {
     if (captcha) return 'CAPTCHA';
 
     // 2. 未登录检查
-    const loginBtn = document.querySelector(
-      'a[href*="/login"], button:has-text("登录"), button:has-text("Sign in"), div[class*="login-button"]'
-    );
-    if (loginBtn) return 'NOT_LOGGED_IN';
+    const loginLink = document.querySelector('a[href*="/login"], div[class*="login-button"]');
+    if (loginLink || hasElementWithText('button, a, span, div[role="button"]', ['登录', 'Sign in', 'Log in'])) return 'NOT_LOGGED_IN';
 
     // 3. 限流检查
     const errorBanner = document.querySelector('div[class*="error-tip"], div[class*="rate-limit"]');

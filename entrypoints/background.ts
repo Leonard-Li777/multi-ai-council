@@ -215,6 +215,19 @@ export default defineBackground(() => {
           console.warn('[Background] FOCUS_TAB query error', e);
         }
       }
+      // 若标签页不存在，主动创建并聚焦，方便用户登录
+      if (!tabId) {
+        const url = SITE_BASE_URLS[msg.payload.siteName] || 'https://chat.deepseek.com/';
+        try {
+          const newTab = await chrome.tabs.create({ url, active: true });
+          if (newTab?.id) {
+            tabId = newTab.id;
+            siteTabs.set(msg.payload.siteName, tabId);
+          }
+        } catch (e) {
+          console.warn('[Background] FOCUS_TAB create error', e);
+        }
+      }
       if (tabId) {
         chrome.tabs.update(tabId, { active: true }, (tab) => {
           if (tab?.windowId) {
@@ -222,10 +235,68 @@ export default defineBackground(() => {
           }
         });
       }
+    } else if (msg.type === 'OPEN_SITES') {
+      // 批量打开指定站点供用户预先登录
+      const openedTabIds: number[] = [];
+      for (const siteName of msg.payload.sites) {
+        let tabId = siteTabs.get(siteName);
+        if (!tabId) {
+          const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['https://chat.deepseek.com/*'];
+          try {
+            const tabs = await chrome.tabs.query({ url: queryPatterns });
+            if (tabs.length > 0 && tabs[0]?.id) {
+              tabId = tabs[0].id;
+              siteTabs.set(siteName, tabId);
+            }
+          } catch {}
+        }
+        if (!tabId) {
+          const url = SITE_BASE_URLS[siteName] || 'https://chat.deepseek.com/';
+          try {
+            const newTab = await chrome.tabs.create({ url, active: false });
+            if (newTab?.id) {
+              tabId = newTab.id;
+              siteTabs.set(siteName, tabId);
+            }
+          } catch {}
+        }
+        if (tabId) {
+          openedTabIds.push(tabId);
+        }
+      }
+      if (openedTabIds.length > 0) {
+        try {
+          if (chrome.tabs.group) {
+            const firstId = openedTabIds[0]!;
+            const groupId = (await chrome.tabs.group({
+              tabIds: [firstId, ...openedTabIds.slice(1)],
+            })) as unknown as number;
+            if (typeof groupId === 'number') {
+              await chrome.tabGroups.update(groupId, {
+                title: 'Multi-AI Council',
+                color: 'blue',
+              });
+            }
+          }
+        } catch {}
+        chrome.tabs.update(openedTabIds[0]!, { active: true });
+      }
     } else if (msg.type === 'RETRY_SITE') {
       const activeJob = await getActiveJob();
       if (activeJob) {
+        const updated = await updateProviderRun(activeJob.id, msg.payload.siteName, {
+          status: 'WAITING_READY',
+          errorReason: undefined,
+        });
+        broadcastJobSync(updated);
         await dispatchToSite(msg.payload.siteName, activeJob.id, activeJob.originalPrompt, activeJob.isContinuation);
+      }
+    } else if (msg.type === 'EXTEND_TIMEOUT') {
+      const activeJob = await getActiveJob();
+      if (activeJob && activeJob.id === msg.payload.jobId) {
+        activeJob.deadlineAt = Date.now() + (msg.payload.extraSeconds || 90) * 1000;
+        await saveActiveJob(activeJob);
+        broadcastJobSync(activeJob);
       }
     } else if (msg.type === 'SKIP_SITE') {
       const activeJob = await getActiveJob();

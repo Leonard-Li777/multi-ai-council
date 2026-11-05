@@ -5,6 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
+import { hasElementWithText } from '../utils/dom-checker';
 
 export class ChatGLMAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'ChatGLM';
@@ -25,8 +26,8 @@ export class ChatGLMAdapter implements AISiteAdapter {
     if (captcha) return 'CAPTCHA';
 
     // 2. 登录弹窗检查
-    const loginModal = document.querySelector('div[class*="login-modal"], a[href*="/login"], button:has-text("登录")');
-    if (loginModal) return 'NOT_LOGGED_IN';
+    const loginModal = document.querySelector('div[class*="login-modal"], a[href*="/login"]');
+    if (loginModal || hasElementWithText('button, a, span', ['登录', 'Sign in'])) return 'NOT_LOGGED_IN';
 
     // 3. 限流
     const limit = document.querySelector('div[class*="rate-limit"], div[class*="error-message"]');
