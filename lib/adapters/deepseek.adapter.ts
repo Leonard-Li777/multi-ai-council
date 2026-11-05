@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class DeepSeekAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'DeepSeek';
@@ -27,25 +27,28 @@ export class DeepSeekAdapter implements AISiteAdapter {
    * 检查是否存在阻断（登录、验证码等）
    */
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. 检查是否未登录
-    if (
-      window.location.pathname.includes('/sign_in') ||
-      window.location.pathname.includes('/login') ||
-      document.querySelector('a[href*="/login"], a[href*="/sign_in"]') !== null ||
-      hasElementWithText('button, a, div[role="button"]', ['登录', 'Sign in', 'Log in'])
-    ) {
-      return 'NOT_LOGGED_IN';
+    // 1. 若输入框已就绪，说明完全处于聊天界面，优先判定就绪
+    const input = this.findInputElement();
+    if (input) {
+      const captcha = document.querySelector('iframe[src*="challenges.cloudflare.com"], #geetest_holder, div[class*="captcha"]');
+      if (captcha) return 'CAPTCHA';
+      return 'OK';
     }
 
     // 2. 检查人机验证 (Cloudflare Turnstile / Geetest)
     const captcha = document.querySelector('iframe[src*="challenges.cloudflare.com"], #geetest_holder, div[class*="captcha"]');
     if (captcha) return 'CAPTCHA';
 
-    // 3. 检查输入框是否存在
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
+    // 3. 检查是否处于真实未登录页面
+    if (
+      window.location.pathname.includes('/sign_in') ||
+      window.location.pathname.includes('/login') ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   /**

@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class WenxinAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Wenxin';
@@ -21,25 +21,31 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. 人机验证
+    // 1. 若输入框已存在，绝非未登录
+    const input = this.findInputElement();
+    if (input) {
+      const captcha = document.querySelector('div[class*="vcode"], div[class*="captcha"], #pass-dialog');
+      if (captcha) return 'CAPTCHA';
+      return 'OK';
+    }
+
+    // 2. 人机验证
     const captcha = document.querySelector('div[class*="vcode"], div[class*="captcha"], #pass-dialog');
     if (captcha) return 'CAPTCHA';
 
-    // 2. 百度登录弹窗或未登录
-    const loginModal = document.querySelector(
-      '#passport-login-pop, div[class*="login-dialog"], a[href*="passport.baidu.com"]'
-    );
-    if (loginModal || hasElementWithText('button, a, span, div[class*="login"]', ['登录'])) return 'NOT_LOGGED_IN';
+    // 3. 百度登录弹窗或未登录
+    if (
+      document.querySelector('#passport-login-pop, div[class*="login-dialog"], a[href*="passport.baidu.com"]') !== null ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
-    // 3. 限流
+    // 4. 限流
     const limit = document.querySelector('div[class*="limit-tip"], div[class*="warn-text"]');
     if (limit) return 'RATE_LIMIT';
 
-    // 4. 输入框检查
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
-
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   public async createNewChat(): Promise<void> {

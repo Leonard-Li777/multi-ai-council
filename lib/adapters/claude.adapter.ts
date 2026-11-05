@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class ClaudeAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Claude';
@@ -27,18 +27,32 @@ export class ClaudeAdapter implements AISiteAdapter {
    * 检查页面阻断状态（Cloudflare Turnstile、未登录、使用配额耗尽等）
    */
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. Cloudflare 质询
+    // 1. 若输入框已存在，绝非未登录
+    const input = this.findInputElement();
+    if (input) {
+      const captcha = document.querySelector(
+        'iframe[src*="challenges.cloudflare.com"], #challenge-running, div[class*="turnstile"], div[id*="cf-challenge"]'
+      );
+      if (captcha) return 'CAPTCHA';
+      return 'OK';
+    }
+
+    // 2. Cloudflare 质询
     const captcha = document.querySelector(
       'iframe[src*="challenges.cloudflare.com"], #challenge-running, div[class*="turnstile"], div[id*="cf-challenge"]'
     );
     if (captcha) return 'CAPTCHA';
 
-    // 2. 未登录检查（如重定向至 /login）
-    if (window.location.pathname.startsWith('/login') || window.location.pathname.startsWith('/signup')) return 'NOT_LOGGED_IN';
-    const loginLink = document.querySelector('a[href*="/login"], a[href*="/signup"]');
-    if (loginLink || hasElementWithText('button, a', ['Log In', 'Sign Up', 'Sign in', '登录'])) return 'NOT_LOGGED_IN';
+    // 3. 未登录检查（如重定向至 /login）
+    if (
+      window.location.pathname.startsWith('/login') ||
+      window.location.pathname.startsWith('/signup') ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
-    // 3. 限流 / 使用额度上限检查
+    // 4. 限流 / 使用额度上限检查
     const limitBanner = document.querySelector(
       'div[class*="border-danger"], div[class*="text-danger"], div[role="alert"]'
     );
@@ -49,11 +63,7 @@ export class ClaudeAdapter implements AISiteAdapter {
       }
     }
 
-    // 4. 输入框是否存在
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
-
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   /**

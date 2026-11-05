@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class GeminiAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Gemini';
@@ -21,19 +21,26 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. Google 登录态检查
-    const signInLink = document.querySelector('a[href*="accounts.google.com"], a[href*="/signin"]');
-    if (signInLink || hasElementWithText('button, a', ['Sign in', '登录'])) return 'NOT_LOGGED_IN';
+    // 1. 若输入框已就绪，绝非未登录
+    const input = this.findInputElement();
+    if (input) {
+      return 'OK';
+    }
 
-    // 2. 限流 / 配额超限
+    // 2. Google 登录态检查
+    if (
+      window.location.href.includes('accounts.google.com') ||
+      document.querySelector('a[href*="accounts.google.com"], a[href*="/signin"]') !== null ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
+
+    // 3. 限流 / 配额超限
     const limitBanner = document.querySelector('div[class*="error-message"], div[class*="rate-limit"]');
     if (limitBanner) return 'RATE_LIMIT';
 
-    // 3. 输入框是否存在
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
-
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   public async createNewChat(): Promise<void> {

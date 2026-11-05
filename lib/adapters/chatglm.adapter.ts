@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class ChatGLMAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'ChatGLM';
@@ -21,23 +21,31 @@ export class ChatGLMAdapter implements AISiteAdapter {
   }
 
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. 人机验证
+    // 1. 若输入框已存在，绝非未登录
+    const input = this.findInputElement();
+    if (input) {
+      const captcha = document.querySelector('div[class*="geetest"], div[class*="captcha"]');
+      if (captcha) return 'CAPTCHA';
+      return 'OK';
+    }
+
+    // 2. 人机验证
     const captcha = document.querySelector('div[class*="geetest"], div[class*="captcha"]');
     if (captcha) return 'CAPTCHA';
 
-    // 2. 登录弹窗检查
-    const loginModal = document.querySelector('div[class*="login-modal"], a[href*="/login"]');
-    if (loginModal || hasElementWithText('button, a, span', ['登录', 'Sign in'])) return 'NOT_LOGGED_IN';
+    // 3. 登录弹窗或登录 URL 检查
+    if (
+      document.querySelector('div[class*="login-modal"], a[href*="/login"]') !== null ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
-    // 3. 限流
+    // 4. 限流
     const limit = document.querySelector('div[class*="rate-limit"], div[class*="error-message"]');
     if (limit) return 'RATE_LIMIT';
 
-    // 4. 输入框检查
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
-
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   public async createNewChat(): Promise<void> {

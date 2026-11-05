@@ -5,7 +5,7 @@ import { simulateTextInput } from '../utils/insert-text';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
-import { hasElementWithText } from '../utils/dom-checker';
+import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class QwenAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Qwen';
@@ -21,25 +21,36 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   public async checkBlocker(): Promise<'OK' | 'CAPTCHA' | 'RATE_LIMIT' | 'NOT_LOGGED_IN' | 'DOM_CHANGED'> {
-    // 1. 人机验证
+    // 1. 若输入框已存在，绝非未登录
+    const input = this.findInputElement();
+    if (input) {
+      const captcha = document.querySelector(
+        'iframe[src*="captcha"], #baxia-dialog-content, div[class*="nc-container"], div[class*="captcha"]'
+      );
+      if (captcha) return 'CAPTCHA';
+      return 'OK';
+    }
+
+    // 2. 人机验证
     const captcha = document.querySelector(
       'iframe[src*="captcha"], #baxia-dialog-content, div[class*="nc-container"], div[class*="captcha"]'
     );
     if (captcha) return 'CAPTCHA';
 
-    // 2. 未登录检查
-    const loginLink = document.querySelector('a[href*="/login"], div[class*="login-button"]');
-    if (loginLink || hasElementWithText('button, a, span, div[role="button"]', ['登录', 'Sign in', 'Log in'])) return 'NOT_LOGGED_IN';
+    // 3. 未登录检查
+    if (
+      window.location.pathname.includes('/login') ||
+      document.querySelector('div[class*="login-button"]') !== null ||
+      isLoginButtonPresent()
+    ) {
+      return 'NOT_LOGGED_IN';
+    }
 
-    // 3. 限流检查
+    // 4. 限流检查
     const errorBanner = document.querySelector('div[class*="error-tip"], div[class*="rate-limit"]');
     if (errorBanner) return 'RATE_LIMIT';
 
-    // 4. 输入框是否存在
-    const input = this.findInputElement();
-    if (!input) return 'DOM_CHANGED';
-
-    return 'OK';
+    return 'DOM_CHANGED';
   }
 
   public async createNewChat(): Promise<void> {

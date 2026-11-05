@@ -480,38 +480,43 @@ export default defineBackground(() => {
       targetTab = tabs[0];
       siteTabs.set(siteName, tabs[0].id);
 
-      // 若需要开启新会话且当前留在旧会话路径，或者需要延续且不在对应会话 URL
-      if (targetTab.url && targetTab.url !== targetUrl) {
-        if (!job.isContinuation && targetTab.url !== baseUrl) {
+      // 若需要延续特定远程会话且不在对应会话 URL，才尝试导航
+      if (job.isContinuation && existingRef?.conversationUrl && targetTab.url && targetTab.url !== existingRef.conversationUrl) {
+        try {
           isNavigating = true;
           contentPorts.delete(siteName);
-          await chrome.tabs.update(targetTab.id, { url: targetUrl });
-        } else if (job.isContinuation && existingRef?.conversationUrl && targetTab.url !== existingRef.conversationUrl) {
-          isNavigating = true;
-          contentPorts.delete(siteName);
-          await chrome.tabs.update(targetTab.id, { url: targetUrl });
+          await chrome.tabs.update(targetTab.id, { url: existingRef.conversationUrl });
+        } catch (e) {
+          isNavigating = false;
+          console.warn(`[Background] Navigation to conversationUrl skipped/rejected:`, e);
         }
       }
     } else {
       // 2. 创建新标签页（直接载入目标会话或新会话根路径）并归拢至 Tab Group
-      isNavigating = true;
-      targetTab = await chrome.tabs.create({
-        url: targetUrl,
-        active: false,
-      });
-      if (targetTab?.id) {
-        siteTabs.set(siteName, targetTab.id);
-        try {
+      try {
+        isNavigating = true;
+        targetTab = await chrome.tabs.create({
+          url: targetUrl,
+          active: false,
+        });
+        if (targetTab?.id) {
+          siteTabs.set(siteName, targetTab.id);
           if (chrome.tabs.group) {
-            const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
-            await chrome.tabGroups.update(groupId, {
-              title: 'Multi-AI Council',
-              color: 'blue',
-            });
+            try {
+              const groupId = (await chrome.tabs.group({ tabIds: [targetTab.id] })) as unknown as number;
+              if (typeof groupId === 'number') {
+                await chrome.tabGroups.update(groupId, {
+                  title: 'Multi-AI Council',
+                  color: 'blue',
+                });
+              }
+            } catch (e) {
+              console.warn('[Background] Tab Grouping skipped or unsupported', e);
+            }
           }
-        } catch (e) {
-          console.warn('[Background] Tab Grouping skipped or unsupported', e);
         }
+      } catch (e) {
+        console.warn('[Background] tabs.create error:', e);
       }
     }
 
@@ -530,7 +535,7 @@ export default defineBackground(() => {
       const updatedJob = await getActiveJob();
       broadcastJobSync(updatedJob);
 
-      // 若标签页本就存在且无需导航，主动尝试 sendMessage 探测激活；若失败则刷新激活 Content Script
+      // 若标签页本就存在且无需导航，主动尝试 sendMessage 探测激活
       if (!isNavigating && targetTab?.id) {
         try {
           await chrome.tabs.sendMessage(targetTab.id, {
@@ -543,8 +548,8 @@ export default defineBackground(() => {
             },
           });
         } catch {
-          console.log(`[Background] Refreshing tab for ${siteName} to boot content script...`);
-          await chrome.tabs.update(targetTab.id, { url: targetUrl });
+          // 标签页可能仍在初始化，静候 CONTENT_READY 广播，不盲目刷新页面
+          console.log(`[Background] Tab for ${siteName} initializing, waiting for CONTENT_READY...`);
         }
       }
     }
