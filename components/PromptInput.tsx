@@ -37,7 +37,7 @@ export const PromptInput: React.FC<PromptInputProps> = ({
   const isManuallyOverridden = manualOverride !== null;
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
+    <div className="flex-1 min-h-0 h-full flex flex-col bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
       {/* 延伸判定徽标与一键纠正栏 */}
       <div className="shrink-0 flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -91,13 +91,13 @@ export const PromptInput: React.FC<PromptInputProps> = ({
       )}
 
       {/* 文本输入框容器：充满剩余垂直高度，仅内部可滚动 */}
-      <div className="flex-1 min-h-0 relative flex flex-col">
+      <div className="flex-1 min-h-0 h-full relative flex flex-col w-full">
         <textarea
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="请输入需要多模型协同审核或提问的提示词...&#10;&#10;输入框将自适应填满剩余空间，仅此处支持滚屏浏览。"
-          className="w-full flex-1 min-h-0 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all resize-none overflow-y-auto text-xs leading-relaxed"
+          placeholder="请输入需要多模型协同审核或提问的提示词...&#10;&#10;输入框已自适应填满剩余空间，仅此处支持滚屏浏览。"
+          className="w-full flex-1 min-h-0 h-full p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all resize-none overflow-y-auto text-xs leading-relaxed"
         />
       </div>
 

@@ -26,7 +26,16 @@ import {
   calculateDefaultMinQuorum,
   isJobTimedOut,
 } from '../../lib/utils/quorum-calculator';
-import { Layers, ShieldCheck, Sparkles, AlertCircle, FastForward, History, RotateCcw } from 'lucide-react';
+import {
+  Layers,
+  ShieldCheck,
+  Sparkles,
+  AlertCircle,
+  FastForward,
+  History,
+  RotateCcw,
+  ChevronsUpDown,
+} from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
@@ -37,6 +46,7 @@ export const App: React.FC = () => {
   const [manualOverride, setManualOverride] = useState<boolean | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'prompt' | 'replies' | 'synthesis' | 'settings'>('prompt');
+  const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
 
   const portSendRef = useRef<((msg: PortMessage) => void) | null>(null);
 
@@ -278,6 +288,44 @@ export const App: React.FC = () => {
     await saveActiveJob(job);
   };
 
+  // 手风琴折叠状态管理
+  const isSiteExpanded = (site: string) => {
+    if (expandedMap[site] !== undefined) {
+      return expandedMap[site];
+    }
+    return true; // 默认全部展开
+  };
+
+  const toggleSiteExpanded = (site: string) => {
+    setExpandedMap((prev) => ({
+      ...prev,
+      [site]: !isSiteExpanded(site),
+    }));
+  };
+
+  const isAllExpanded = useMemo(() => {
+    return selectedSites.every((site) => isSiteExpanded(site));
+  }, [selectedSites, expandedMap]);
+
+  const handleToggleAllExpanded = () => {
+    const nextState = !isAllExpanded;
+    const nextMap: Record<string, boolean> = {};
+    selectedSites.forEach((site) => {
+      nextMap[site] = nextState;
+    });
+    setExpandedMap(nextMap);
+  };
+
+  // 全站抓取总字数统计
+  const totalCapturedChars = useMemo(() => {
+    if (!activeJob) return 0;
+    return selectedSites.reduce((acc, site) => {
+      const run = activeJob.providerRuns[site];
+      const text = run?.cleanedResponse || run?.responseSnapshot || '';
+      return acc + text.length;
+    }, 0);
+  }, [activeJob, selectedSites]);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden p-3 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 text-xs box-border">
       {/* 顶部固定区域：标题栏 + 超时警报 + 站点状态/开关紧凑集中 */}
@@ -420,17 +468,15 @@ export const App: React.FC = () => {
         {/* Tab 1: 会话提问 */}
         {activeTab === 'prompt' && (
           <div className="flex-1 min-h-0 flex flex-col">
-            <div className="flex-1 min-h-0">
-              <PromptInput
-                value={promptText}
-                onChange={setPromptText}
-                lastPrompt={lastPrompt}
-                activeConversationUrl={activeConvUrl}
-                manualOverride={manualOverride}
-                onToggleOverride={handleToggleOverride}
-                disabled={isRunning}
-              />
-            </div>
+            <PromptInput
+              value={promptText}
+              onChange={setPromptText}
+              lastPrompt={lastPrompt}
+              activeConversationUrl={activeConvUrl}
+              manualOverride={manualOverride}
+              onToggleOverride={handleToggleOverride}
+              disabled={isRunning}
+            />
             <div className="shrink-0 pt-2">
               <JobControls
                 onStart={handleStart}
@@ -449,7 +495,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 2: AI回复（多模型回复详情与一键复制） */}
+        {/* Tab 2: AI回复（多模型回复详情手风琴与一键复制） */}
         {activeTab === 'replies' && (
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
             {/* 状态通知条与快捷控制 */}
@@ -459,14 +505,24 @@ export const App: React.FC = () => {
                   <span className="font-semibold text-xs">
                     进度：{quorumProgress ? `${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站完成` : '就绪'}
                   </span>
-                  {quorumProgress && (
-                    <span className="text-[10px] text-slate-400">
-                      (门槛: {quorumProgress.minRequired})
+                  {totalCapturedChars > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-mono">
+                      共 {totalCapturedChars} 字
                     </span>
                   )}
                 </div>
 
                 <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleToggleAllExpanded}
+                    className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    title={isAllExpanded ? '一键全部折叠卡片' : '一键全部展开卡片'}
+                  >
+                    <ChevronsUpDown className="w-3 h-3" />
+                    <span>{isAllExpanded ? '全部折叠' : '全部展开'}</span>
+                  </button>
+
                   <button
                     onClick={handleExtendTimeout}
                     className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
@@ -492,7 +548,7 @@ export const App: React.FC = () => {
               </div>
             )}
 
-            {/* 站点卡片列表 */}
+            {/* 站点卡片列表（手风琴形式） */}
             {activeJob ? (
               <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
                 {selectedSites.map((site) => (
@@ -500,6 +556,8 @@ export const App: React.FC = () => {
                     key={site}
                     siteName={site}
                     run={activeJob.providerRuns[site]}
+                    isExpanded={isSiteExpanded(site)}
+                    onToggleExpand={() => toggleSiteExpanded(site)}
                     onFocusTab={() => handleFocusTab(site)}
                     onRetry={() => handleRetry(site)}
                     onSkip={() => handleSkipSite(site)}
