@@ -25,6 +25,7 @@ export type InterceptorMessage = {
 };
 
 /**
- * 跨世界 postMessage 单帧体积上限 (默认 4MB 保守设定，Ticket 03 实测后校准为峰值 × 2)
+ * 跨世界 postMessage 单帧体积上限
+ * Ticket 03 实测后校准为峰值 × 2 (默认 8MB，支持极端多模态/超长论文输出)
  */
-export const MAX_STREAM_FRAME_SIZE = 4 * 1024 * 1024;
+export const MAX_STREAM_FRAME_SIZE = 8 * 1024 * 1024;

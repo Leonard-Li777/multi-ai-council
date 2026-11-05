@@ -29,6 +29,7 @@ export interface StreamOrchestratorOptions {
 export class StreamOrchestrator {
   private state: OrchestratorState = 'IDLE';
   private currentJobId: string | null = null;
+  private currentPrompt = '';
   private activeStreamId: string | null = null;
   private responseSnapshot = '';
   private ttftTimer: number | null = null;
@@ -43,6 +44,7 @@ export class StreamOrchestrator {
 
   public dispatchPrompt(jobId: string, prompt: string): void {
     this.currentJobId = jobId;
+    this.currentPrompt = prompt || '';
     this.activeStreamId = null;
     this.responseSnapshot = '';
     this.activeParser = undefined;
@@ -50,6 +52,35 @@ export class StreamOrchestrator {
 
     // 启动 15 秒因果超时安全网
     this.refreshTtftTimer();
+  }
+
+  /**
+   * AC9: Service Worker 30s 回收后状态机幂等重水化 (Rehydration)
+   * 从 chrome.storage.session + IndexedDB 恢复历史快照与流状态，无缝接续后续流
+   */
+  public restoreSession(params: {
+    jobId: string;
+    streamId: string;
+    responseSnapshot: string;
+    prompt?: string;
+    url?: string;
+  }): void {
+    this.currentJobId = params.jobId;
+    this.currentPrompt = params.prompt || '';
+    this.activeStreamId = params.streamId;
+    this.responseSnapshot = params.responseSnapshot || '';
+    // D2 修复：先显式清空旧 parser，防止 url 缺省时旧 parser 残留导致后续帧错误路由
+    this.activeParser = undefined;
+    if (params.url) {
+      this.activeParser = new UnifiedSemanticStreamParser(
+        params.url,
+        (event) => this.handleSemanticEvent(event),
+        this.currentPrompt
+      );
+    }
+    this.setState('STREAMING');
+    this.refreshTtftTimer();
+    this.options.onPauseDom?.();
   }
 
   public handleStreamFrame(frame: StreamFramePayload): void {
@@ -66,7 +97,11 @@ export class StreamOrchestrator {
     if (this.state === 'PENDING_STREAM') {
       // 成功捕获第一帧合规主会话流，立刻独占上锁并冻结 DOM 监听
       this.activeStreamId = streamId;
-      this.activeParser = new UnifiedSemanticStreamParser(url, (event) => this.handleSemanticEvent(event));
+      this.activeParser = new UnifiedSemanticStreamParser(
+        url,
+        (event) => this.handleSemanticEvent(event),
+        this.currentPrompt
+      );
       this.setState('STREAMING');
       this.options.onPauseDom?.();
     }
@@ -77,8 +112,8 @@ export class StreamOrchestrator {
     }
 
     // 4. 将原始分片数据送入统一语义解析器
-    if (this.activeParser && rawText) {
-      this.activeParser.feedRawText(rawText);
+    if (this.activeParser && (rawText || isDone)) {
+      this.activeParser.feedRawText(rawText, isDone);
     }
 
     // 5. 处理底层网络终态 (DONE / PARTIAL / ERROR)

@@ -1,6 +1,7 @@
 import { IncrementalSSEParser, type SSEEvent } from './sse-parser';
 import { ChatGPTStreamParser } from './chatgpt-parser';
 import { DeepSeekStreamParser } from './deepseek-parser';
+import { GeminiRpcParser } from './gemini-rpc-parser';
 import { parseClaudeEvent, parseQwenEvent, parseWenxinChunk } from './protocol-adapters';
 
 export type SemanticEvent =
@@ -17,7 +18,9 @@ export type SemanticEventCallback = (event: SemanticEvent) => void;
  * 严格白名单正向判定是否为合规的 AI 消息生成端点 (GENERATION)
  * 无法匹配的全部归为 UNKNOWN 旁路杂流，绝不抢占锁
  */
-export function matchGenerationEndpoint(url: string): 'CHATGPT' | 'DEEPSEEK' | 'CLAUDE' | 'QWEN' | 'WENXIN' | 'UNKNOWN' {
+export function matchGenerationEndpoint(
+  url: string
+): 'CHATGPT' | 'DEEPSEEK' | 'CLAUDE' | 'QWEN' | 'WENXIN' | 'GEMINI' | 'UNKNOWN' {
   if (!url) return 'UNKNOWN';
 
   // 严格排除标题、会话列表、遥测与设置接口
@@ -59,6 +62,11 @@ export function matchGenerationEndpoint(url: string): 'CHATGPT' | 'DEEPSEEK' | '
     return 'WENXIN';
   }
 
+  // 6. Google Gemini: StreamGenerate 或 assistant.lamda Batchexecute RPC
+  if (url.includes('StreamGenerate') || url.includes('assistant.lamda')) {
+    return 'GEMINI';
+  }
+
   return 'UNKNOWN';
 }
 
@@ -72,8 +80,9 @@ export class UnifiedSemanticStreamParser {
   private sseParser?: IncrementalSSEParser;
   private chatGptParser?: ChatGPTStreamParser;
   private deepSeekParser?: DeepSeekStreamParser;
+  private geminiParser?: GeminiRpcParser;
 
-  constructor(url: string, onEvent: SemanticEventCallback) {
+  constructor(url: string, onEvent: SemanticEventCallback, userPrompt?: string) {
     this.endpointType = matchGenerationEndpoint(url);
     this.onEvent = onEvent;
 
@@ -87,28 +96,52 @@ export class UnifiedSemanticStreamParser {
       this.sseParser = new IncrementalSSEParser((evt) => this.handleClaudeEvent(evt));
     } else if (this.endpointType === 'QWEN') {
       this.sseParser = new IncrementalSSEParser((evt) => this.handleQwenEvent(evt));
+    } else if (this.endpointType === 'GEMINI') {
+      this.geminiParser = new GeminiRpcParser({ userPrompt });
     }
   }
 
-  public feedRawText(rawText: string): void {
-    if (!rawText) return;
+  public feedRawText(rawText: string, isDone = false): void {
+    if (!rawText && !isDone) return;
 
-    if (this.endpointType === 'WENXIN') {
-      // 百度文心一言为 Chunked JSON，直接解析分片
-      const res = parseWenxinChunk(rawText);
-      if (res) {
-        if (res.text) {
-          this.onEvent({ type: 'DELTA', text: res.text });
+    if (this.endpointType === 'GEMINI') {
+      // Google Gemini Batchexecute RPC 解包
+      if (rawText) {
+        const res = this.geminiParser?.parseChunk(rawText);
+        if (res && res.text) {
+          this.onEvent({ type: 'SNAPSHOT', text: res.text });
         }
-        if (res.isDone) {
-          this.onEvent({ type: 'DONE', endReason: 'EOF' });
-        }
+      }
+      // D4 注释：rawText 为空且 isDone=false 时，空帧无内容，no-op 是正确行为
+      if (isDone) {
+        this.onEvent({ type: 'DONE', endReason: 'EOF' });
       }
       return;
     }
 
-    if (this.sseParser) {
+    if (this.endpointType === 'WENXIN') {
+      // 百度文心一言为 Chunked JSON，直接解析分片
+      if (rawText) {
+        const res = parseWenxinChunk(rawText);
+        if (res) {
+          if (res.text) {
+            this.onEvent({ type: 'DELTA', text: res.text });
+          }
+          if (res.isDone || isDone) {
+            this.onEvent({ type: 'DONE', endReason: 'EOF' });
+          }
+        }
+      } else if (isDone) {
+        this.onEvent({ type: 'DONE', endReason: 'EOF' });
+      }
+      return;
+    }
+
+    if (this.sseParser && rawText) {
       this.sseParser.feed(rawText);
+    }
+    if (isDone) {
+      this.onEvent({ type: 'DONE', endReason: 'EOF' });
     }
   }
 
@@ -177,5 +210,6 @@ export class UnifiedSemanticStreamParser {
     this.sseParser?.reset();
     this.chatGptParser?.reset();
     this.deepSeekParser?.reset();
+    this.geminiParser?.reset();
   }
 }
