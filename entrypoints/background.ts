@@ -710,23 +710,26 @@ export default defineBackground(() => {
       }
     }
 
-    const tabId = siteTabs.get(siteName);
-    if (tabId) {
-      try {
-        const res = await chrome.tabs.sendMessage(tabId, {
-          type: 'DISPATCH_PROMPT',
-          payload: {
-            siteName,
-            jobId,
-            prompt,
-            isContinuation,
-          },
-        });
-        if (res?.received || res?.success) {
-          dispatched = true;
+    // 仅当 Port 不可用或发送失败时，降级使用 tabs.sendMessage，严禁双通道重复派发导致页面并发踩踏
+    if (!dispatched) {
+      const tabId = siteTabs.get(siteName);
+      if (tabId) {
+        try {
+          const res = await chrome.tabs.sendMessage(tabId, {
+            type: 'DISPATCH_PROMPT',
+            payload: {
+              siteName,
+              jobId,
+              prompt,
+              isContinuation,
+            },
+          });
+          if (res?.received || res?.success) {
+            dispatched = true;
+          }
+        } catch {
+          // Tab might still be initializing
         }
-      } catch {
-        // Tab might still be initializing
       }
     }
 

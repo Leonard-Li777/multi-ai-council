@@ -61,13 +61,41 @@ export class QwenAdapter implements AISiteAdapter {
     return 'DOM_CHANGED';
   }
 
-  public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'button[class*="new-chat"], a[href="/"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"]'
+  /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      'div[class*="qwen-markdown"], div[class*="message-item-bot"], div[class*="bubble-content"], div[class*="assistant"]'
     );
-    if (newChatBtn && window.location.pathname !== '/') {
+    return msgs.length > 0;
+  }
+
+  public async createNewChat(): Promise<void> {
+    const allCandidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[class*="new-chat"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"], a[href="/"]'
+      )
+    );
+    const newChatBtn = allCandidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
+      return true;
+    });
+
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://chat.qwen.ai/';
+        await this.sleep(1000);
+      }
+      return;
+    }
+
+    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
+      window.location.href = 'https://chat.qwen.ai/';
+      await this.sleep(1000);
     }
   }
 
@@ -243,7 +271,7 @@ export class QwenAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

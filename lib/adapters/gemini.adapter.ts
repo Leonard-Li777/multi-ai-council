@@ -51,13 +51,41 @@ export class GeminiAdapter implements AISiteAdapter {
     return 'DOM_CHANGED';
   }
 
-  public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'a[href="/app"], button[aria-label*="New chat"], button[aria-label*="新对话"], [data-test-id="new-chat-button"]'
+  /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      'model-response, div[class*="model-response"], div[class*="response-container"], message-content'
     );
-    if (newChatBtn && window.location.pathname !== '/app') {
+    return msgs.length > 0;
+  }
+
+  public async createNewChat(): Promise<void> {
+    const allCandidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'a[href="/app"], button[aria-label*="New chat"], button[aria-label*="新对话"], [data-test-id="new-chat-button"]'
+      )
+    );
+    const newChatBtn = allCandidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
+      return true;
+    });
+
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://gemini.google.com/app';
+        await this.sleep(1000);
+      }
+      return;
+    }
+
+    if (window.location.pathname !== '/app' || this.hasExistingMessages()) {
+      window.location.href = 'https://gemini.google.com/app';
+      await this.sleep(1000);
     }
   }
 
@@ -164,7 +192,7 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

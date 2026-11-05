@@ -60,33 +60,51 @@ export class DeepSeekAdapter implements AISiteAdapter {
   }
 
   /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      '.ds-markdown, div[class*="ds-markdown"], div[class*="message-content"], div[class*="assistant"]'
+    );
+    return msgs.length > 0;
+  }
+
+  /**
    * 开启新会话
    */
   public async createNewChat(): Promise<void> {
-    // 1. 寻找页面上的新会话入口（支持中文/英文/属性）
+    // 1. 寻找页面上的新会话入口（精准匹配，排除左上角 Logo 首页链接）
     const allCandidates = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], a, button'));
     const newChatBtn = allCandidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
       const text = (el.innerText || el.textContent || '').trim();
       const aria = (el.getAttribute('aria-label') || '').trim();
       return (
         text === '开启新对话' ||
         text === '新对话' ||
         text === 'New chat' ||
+        text.includes('开启新对话') ||
+        text.includes('新建对话') ||
         aria.includes('新对话') ||
         aria.includes('新聊天') ||
-        aria.includes('New chat') ||
-        el.getAttribute('href') === '/'
+        aria.includes('New chat')
       );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
       await this.sleep(800);
+      // 若点击后依然存在旧消息，强行导航回根路径
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://chat.deepseek.com/';
+        await this.sleep(1000);
+      }
       return;
     }
 
-    // 2. 降级：若在历史会话子路径则导航至根路径
-    if (window.location.pathname !== '/' && window.location.pathname.length > 1) {
+    // 2. 降级：若在历史会话子路径或当前仍存在旧对话，导航至根路径彻底刷新
+    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
       window.location.href = 'https://chat.deepseek.com/';
       await this.sleep(1000);
     }
@@ -217,7 +235,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

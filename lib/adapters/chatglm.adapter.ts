@@ -56,13 +56,41 @@ export class ChatGLMAdapter implements AISiteAdapter {
     return 'DOM_CHANGED';
   }
 
-  public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'div[class*="new-chat"], button[class*="new-chat"], a[href="/main/gchat"], div[class*="add-chat"]'
+  /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      'div[class*="chat-item-robot"], div[class*="assistant"], div[class*="answer"], div[class*="bot-message"]'
     );
-    if (newChatBtn && window.location.pathname !== '/main/gchat') {
+    return msgs.length > 0;
+  }
+
+  public async createNewChat(): Promise<void> {
+    const allCandidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[class*="new-chat"], button[class*="new-chat"], a[href="/main/gchat"], div[class*="add-chat"]'
+      )
+    );
+    const newChatBtn = allCandidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
+      return true;
+    });
+
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://chatglm.cn/main/gchat';
+        await this.sleep(1000);
+      }
+      return;
+    }
+
+    if (window.location.pathname !== '/main/gchat' || this.hasExistingMessages()) {
+      window.location.href = 'https://chatglm.cn/main/gchat';
+      await this.sleep(1000);
     }
   }
 
@@ -167,7 +195,7 @@ export class ChatGLMAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

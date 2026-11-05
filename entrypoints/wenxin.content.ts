@@ -10,6 +10,8 @@ export default defineContentScript({
 
     let stopListening: (() => void) | null = null;
     let currentJobId: string | null = null;
+    let isDispatching = false;
+    let lastHandledJobId = '';
     let sendFn: ((msg: PortMessage) => void) | null = null;
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
@@ -18,6 +20,12 @@ export default defineContentScript({
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Wenxin') {
         const { jobId, prompt, isContinuation } = msg.payload;
+        if (isDispatching && lastHandledJobId === jobId) {
+          console.warn(`[WenxinContent] Already dispatching Job ${jobId}, ignoring duplicate`);
+          return;
+        }
+        isDispatching = true;
+        lastHandledJobId = jobId;
         currentJobId = jobId;
 
         try {
@@ -126,6 +134,8 @@ export default defineContentScript({
               errorReason: err instanceof Error ? err.message : String(err),
             },
           });
+        } finally {
+          isDispatching = false;
         }
       } else if (msg.type === 'RECOVER_SITE' && msg.payload.siteName === 'Wenxin') {
         const { jobId, prompt } = msg.payload;

@@ -75,6 +75,16 @@ export class ClaudeAdapter implements AISiteAdapter {
   }
 
   /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      'div[data-is-streaming], div[class*="font-claude-message"], div[class*="standard-markdown"]'
+    );
+    return msgs.length > 0;
+  }
+
+  /**
    * 开启新会话
    */
   public async createNewChat(): Promise<void> {
@@ -82,9 +92,19 @@ export class ClaudeAdapter implements AISiteAdapter {
       'a[href="/new"], a[data-testid="new-chat-button"], button[aria-label*="New chat"], button[aria-label*="新会话"]'
     );
 
-    if (newChatBtn && window.location.pathname !== '/new' && window.location.pathname !== '/') {
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      if (this.hasExistingMessages() || window.location.pathname !== '/new') {
+        window.location.href = 'https://claude.ai/new';
+        await this.sleep(1000);
+      }
+      return;
+    }
+
+    if (window.location.pathname !== '/new' || this.hasExistingMessages()) {
+      window.location.href = 'https://claude.ai/new';
+      await this.sleep(1000);
     }
   }
 
@@ -210,7 +230,7 @@ export class ClaudeAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

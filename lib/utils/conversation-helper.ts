@@ -3,7 +3,7 @@ import type { SupportedSite, ProviderConversationRef } from '../types/review-job
 export const SITE_BASE_URLS: Record<SupportedSite, string> = {
   DeepSeek: 'https://chat.deepseek.com/',
   ChatGPT: 'https://chatgpt.com/',
-  Claude: 'https://claude.ai/',
+  Claude: 'https://claude.ai/new',
   Gemini: 'https://gemini.google.com/app',
   Qwen: 'https://chat.qwen.ai/',
   Wenxin: 'https://yiyan.baidu.com/',

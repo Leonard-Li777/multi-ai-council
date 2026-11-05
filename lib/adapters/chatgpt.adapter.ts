@@ -75,16 +75,43 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    const msgs = document.querySelectorAll(
+      'article, div[data-message-author-role="assistant"], div[class*="agent-turn"]'
+    );
+    return msgs.length > 0;
+  }
+
+  /**
    * 开启新会话
    */
   public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'a[data-testid="new-chat-button"], a[href="/"], button[aria-label*="New chat"], button[aria-label*="开启新聊天"]'
+    const allCandidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[data-testid="create-new-chat-button"], a[data-testid="new-chat-button"], button[aria-label*="New chat"], button[aria-label*="新聊天"], a[href="/"]'
+      )
     );
+    const newChatBtn = allCandidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
+      return true;
+    });
 
-    if (newChatBtn && window.location.pathname !== '/') {
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://chatgpt.com/';
+        await this.sleep(1000);
+      }
+      return;
+    }
+
+    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
+      window.location.href = 'https://chatgpt.com/';
+      await this.sleep(1000);
     }
   }
 
@@ -212,7 +239,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);

@@ -31,6 +31,6 @@ describe('Claude Adapter & Contract Conformance', () => {
     expect(continuationUrl).toBe(claudeConvUrl);
 
     const newChatUrl = getTargetDispatchUrl('Claude', false);
-    expect(newChatUrl).toBe('https://claude.ai/');
+    expect(newChatUrl).toBe('https://claude.ai/new');
   });
 });

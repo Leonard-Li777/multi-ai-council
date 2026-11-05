@@ -24,7 +24,7 @@ export class QuadSignalDoneDetector {
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
       ...options,
     };
   }
@@ -78,25 +78,48 @@ export class QuadSignalDoneDetector {
       return;
     }
 
-    // 信号 2：检查发送按钮是否已处于可用状态
-    const sendBtn = this.options.getSendButton();
-    const isSendReady = sendBtn !== null && isVisible(sendBtn) && !sendBtn.hasAttribute('disabled');
-
     const content = this.options.getCurrentContent();
     const currentLen = content.trim().length;
 
     // 若还没产生任何内容，等待
     if (currentLen === 0) return;
 
+    // 思考保护：如果当前内容仅仅是“正在思考”、“思考中”等占位词，绝不能判定完成
+    if (isThinkingOnly(content)) {
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      return;
+    }
+
+    // 信号 2：检查发送按钮是否已被禁用（若页面依然将发送按钮置灰，说明仍在后台生成/排队）
+    const sendBtn = this.options.getSendButton();
+    const isSendDisabled =
+      sendBtn !== null &&
+      (sendBtn.hasAttribute('disabled') ||
+        sendBtn.getAttribute('aria-disabled') === 'true' ||
+        sendBtn.classList.contains('disabled') ||
+        sendBtn.classList.contains('is-disabled'));
+
+    if (isSendDisabled) {
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      return;
+    }
+
     // 信号 3 & 4：静默计时 + 长度稳定
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
-        // 再次确认内容长度稳定且非生成中
+        // 再次确认内容长度稳定、非思考占位词、且非生成中
         if (
           !this.isCompleted &&
           latestContent.trim().length === this.lastContentLength &&
+          !isThinkingOnly(latestContent) &&
           !isVisible(this.options.getStopButton())
         ) {
           this.markDone(latestContent);
@@ -134,4 +157,19 @@ export class QuadSignalDoneDetector {
 function isVisible(el: HTMLElement | null): boolean {
   if (!el) return false;
   return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+}
+
+function isThinkingOnly(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[\s\.\:\…\-\_\,\，\。]/g, '');
+  return (
+    t === '正在思考' ||
+    t === '思考中' ||
+    t === '深度思考中' ||
+    t === 'thinking' ||
+    t === 'thought' ||
+    t === 'reasoning' ||
+    t === '正在思考中' ||
+    t === '正在生成' ||
+    (t.startsWith('正在思考') && t.length <= 8)
+  );
 }

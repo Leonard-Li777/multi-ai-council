@@ -56,9 +56,18 @@ export class WenxinAdapter implements AISiteAdapter {
     return 'DOM_CHANGED';
   }
 
+  /**
+   * 检查页面当前是否已存在历史消息
+   */
+  public hasExistingMessages(): boolean {
+    return this.findLatestAssistantMessageElement() !== null;
+  }
+
   public async createNewChat(): Promise<void> {
     const candidates = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button, span, a'));
     const newChatBtn = candidates.find((el) => {
+      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+      if (isLogo) return false;
       const text = (el.innerText || el.textContent || '').trim();
       const aria = (el.getAttribute('aria-label') || '').trim();
       return (
@@ -66,18 +75,22 @@ export class WenxinAdapter implements AISiteAdapter {
         text === '新建会话' ||
         text === '新对话' ||
         text === 'New chat' ||
-        aria.includes('新建') ||
-        el.getAttribute('href') === '/'
+        aria.includes('新建对话') ||
+        aria.includes('新建会话')
       );
     });
 
-    if (newChatBtn && window.location.pathname !== '/') {
+    if (newChatBtn) {
       newChatBtn.click();
       await this.sleep(800);
+      if (this.hasExistingMessages()) {
+        window.location.href = 'https://yiyan.baidu.com/';
+        await this.sleep(1000);
+      }
       return;
     }
 
-    if (window.location.pathname !== '/' && window.location.pathname.length > 1) {
+    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
       window.location.href = 'https://yiyan.baidu.com/';
       await this.sleep(1000);
     }
@@ -186,7 +199,7 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2000,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);
