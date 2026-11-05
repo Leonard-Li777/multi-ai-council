@@ -56,13 +56,11 @@ export class DeepSeekAdapter implements AISiteAdapter {
    */
   public async createNewChat(): Promise<void> {
     const newChatBtn = document.querySelector<HTMLElement>(
-      'div[role="button"][class*="new"], a[href="/"], div[class*="new-chat"], button:has(svg)'
+      'div[role="button"][class*="new"], a[href="/"], div[class*="new-chat"]'
     );
     if (newChatBtn && window.location.pathname !== '/') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/') {
-      window.location.href = 'https://chat.deepseek.com/';
+      await this.sleep(600);
     }
   }
 

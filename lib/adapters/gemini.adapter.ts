@@ -49,9 +49,7 @@ export class GeminiAdapter implements AISiteAdapter {
     );
     if (newChatBtn && window.location.pathname !== '/app') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/app') {
-      window.location.href = 'https://gemini.google.com/app';
+      await this.sleep(600);
     }
   }
 

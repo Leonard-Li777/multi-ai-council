@@ -54,9 +54,7 @@ export class ChatGLMAdapter implements AISiteAdapter {
     );
     if (newChatBtn && window.location.pathname !== '/main/gchat') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/main/gchat') {
-      window.location.href = 'https://chatglm.cn/main/gchat';
+      await this.sleep(600);
     }
   }
 

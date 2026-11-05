@@ -76,9 +76,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
 
     if (newChatBtn && window.location.pathname !== '/') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/') {
-      window.location.href = 'https://chatgpt.com/';
+      await this.sleep(600);
     }
   }
 

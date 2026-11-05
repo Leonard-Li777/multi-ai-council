@@ -159,9 +159,22 @@ export default defineContentScript({
     );
     sendFn = boundSend;
 
-    // 兼听 runtime.onMessage（支持 tabs.sendMessage 直达调度）
-    const runtimeMessageListener = (msg: PortMessage) => {
-      handleIncomingMessage(msg);
+    // 兼听 runtime.onMessage（支持 tabs.sendMessage 直达调度与存活心跳）
+    const runtimeMessageListener = (
+      msg: PortMessage,
+      _sender: chrome.runtime.MessageSender,
+      sendResponse: (response?: any) => void
+    ) => {
+      if (msg.type === 'PING') {
+        sendResponse({ type: 'PONG', siteName: 'ChatGPT', ready: true });
+        return false;
+      }
+      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+        sendResponse({ success: true, siteName: 'ChatGPT', received: true });
+        handleIncomingMessage(msg);
+        return false;
+      }
+      return false;
     };
     if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.addListener(runtimeMessageListener);

@@ -59,9 +59,7 @@ export class QwenAdapter implements AISiteAdapter {
     );
     if (newChatBtn && window.location.pathname !== '/') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/') {
-      window.location.href = 'https://chat.qwen.ai/';
+      await this.sleep(600);
     }
   }
 

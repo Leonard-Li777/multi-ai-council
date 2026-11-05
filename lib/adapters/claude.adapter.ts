@@ -76,9 +76,7 @@ export class ClaudeAdapter implements AISiteAdapter {
 
     if (newChatBtn && window.location.pathname !== '/new' && window.location.pathname !== '/') {
       newChatBtn.click();
-      await this.sleep(1000);
-    } else if (window.location.pathname !== '/new' && window.location.pathname !== '/') {
-      window.location.href = 'https://claude.ai/new';
+      await this.sleep(600);
     }
   }
 

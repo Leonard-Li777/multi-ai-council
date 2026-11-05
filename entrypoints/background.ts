@@ -32,6 +32,16 @@ const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
   ChatGLM: ['https://chatglm.cn/*'],
 };
 
+const SITE_CONTENT_SCRIPTS: Record<SupportedSite, string> = {
+  DeepSeek: 'content-scripts/deepseek.js',
+  ChatGPT: 'content-scripts/chatgpt.js',
+  Claude: 'content-scripts/claude.js',
+  Gemini: 'content-scripts/gemini.js',
+  Qwen: 'content-scripts/qwen.js',
+  Wenxin: 'content-scripts/wenxin.js',
+  ChatGLM: 'content-scripts/chatglm.js',
+};
+
 export default defineBackground(() => {
   console.log('[Multi-AI Council] Background Service Worker initialized');
 
@@ -101,6 +111,10 @@ export default defineBackground(() => {
       const siteName = msg.payload.siteName;
       if (port) {
         contentPorts.set(siteName, port);
+      }
+      const tabId = port?.sender?.tab?.id || msg.payload.tabId;
+      if (tabId) {
+        siteTabs.set(siteName, tabId);
       }
       console.log(`[Background] Content Script ready for ${siteName}`);
 
@@ -262,6 +276,7 @@ export default defineBackground(() => {
         }
         if (tabId) {
           openedTabIds.push(tabId);
+          ensureContentScriptReady(tabId, siteName).catch(() => {});
         }
       }
       if (openedTabIds.length > 0) {
@@ -289,7 +304,7 @@ export default defineBackground(() => {
           errorReason: undefined,
         });
         broadcastJobSync(updated);
-        await dispatchToSite(msg.payload.siteName, activeJob.id, activeJob.originalPrompt, activeJob.isContinuation);
+        await ensureSiteTabAndDispatch(msg.payload.siteName, activeJob);
       }
     } else if (msg.type === 'EXTEND_TIMEOUT') {
       const activeJob = await getActiveJob();
@@ -343,7 +358,10 @@ export default defineBackground(() => {
   }
 
   // 1. 注册 runtime.onMessage 监听（保障 SW 唤醒后的首要指令畅通）
-  chrome.runtime.onMessage.addListener((msg: PortMessage, _sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((msg: PortMessage, sender, sendResponse) => {
+    if (msg.type === 'CONTENT_READY' && sender.tab?.id && !msg.payload.tabId) {
+      msg.payload.tabId = sender.tab.id;
+    }
     handleIncomingControlMessage(msg)
       .then(() => sendResponse({ success: true }))
       .catch((err) => {
@@ -458,6 +476,41 @@ export default defineBackground(() => {
     }
   }
 
+  async function ensureContentScriptReady(tabId: number, siteName: SupportedSite): Promise<boolean> {
+    // 1. 优先尝试探测标签页内是否已有存活的 content script
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+      if (res && res.ready) {
+        return true;
+      }
+    } catch {
+      // 尚未响应，尝试主动注入
+    }
+
+    // 2. 使用 chrome.scripting.executeScript 动态注入编译产物中的 content script
+    const scriptFile = SITE_CONTENT_SCRIPTS[siteName];
+    if (chrome.scripting && chrome.scripting.executeScript && scriptFile) {
+      try {
+        console.log(`[Background] Actively injecting ${scriptFile} into tab ${tabId} (${siteName})...`);
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          files: [scriptFile],
+        });
+        // 留出 200ms 等待 content script 启动注册
+        await new Promise((r) => setTimeout(r, 200));
+        const pingRes = await chrome.tabs.sendMessage(tabId, { type: 'PING' });
+        if (pingRes && pingRes.ready) {
+          console.log(`[Background] Successfully injected and confirmed ready: ${siteName}`);
+          return true;
+        }
+      } catch (err) {
+        console.warn(`[Background] executeScript attempt failed for ${siteName} tab ${tabId}:`, err);
+      }
+    }
+
+    return false;
+  }
+
   async function ensureSiteTabAndDispatch(siteName: SupportedSite, job: ReviewJob) {
     // 0. 读取历史会话引用并解析目标分发 URL
     const existingRef = await getConversationRef(siteName);
@@ -520,38 +573,30 @@ export default defineBackground(() => {
       }
     }
 
-    // 3. 检查 Content Script 是否已就绪（若正在触发导航重载，必须等待新页面 CONTENT_READY）
-    const port = !isNavigating ? contentPorts.get(siteName) : undefined;
-    if (port) {
+    // 3. 检查并确保 Content Script 已就绪并注入
+    let isReady = false;
+    if (!isNavigating && targetTab?.id) {
+      isReady = await ensureContentScriptReady(targetTab.id, siteName);
+    }
+
+    if (isReady) {
       await dispatchToSite(siteName, job.id, job.originalPrompt, job.isContinuation);
     } else {
-      // 标记为 WAITING_READY，等 Content Script 发送 CONTENT_READY 时自动触发
+      // 标记为 WAITING_READY，若标签页未响应则触发重载以强制由 Chrome 自动注入 content script
       if (targetTab?.id) {
         await updateProviderRun(job.id, siteName, {
           tabId: targetTab.id,
           status: 'WAITING_READY',
         });
+        if (!isNavigating) {
+          try {
+            console.log(`[Background] Tab ${targetTab.id} not responding for ${siteName}, reloading to inject...`);
+            await chrome.tabs.reload(targetTab.id);
+          } catch {}
+        }
       }
       const updatedJob = await getActiveJob();
       broadcastJobSync(updatedJob);
-
-      // 若标签页本就存在且无需导航，主动尝试 sendMessage 探测激活
-      if (!isNavigating && targetTab?.id) {
-        try {
-          await chrome.tabs.sendMessage(targetTab.id, {
-            type: 'DISPATCH_PROMPT',
-            payload: {
-              siteName,
-              jobId: job.id,
-              prompt: job.originalPrompt,
-              isContinuation: job.isContinuation,
-            },
-          });
-        } catch {
-          // 标签页可能仍在初始化，静候 CONTENT_READY 广播，不盲目刷新页面
-          console.log(`[Background] Tab for ${siteName} initializing, waiting for CONTENT_READY...`);
-        }
-      }
     }
   }
 
@@ -584,7 +629,7 @@ export default defineBackground(() => {
     const tabId = siteTabs.get(siteName);
     if (tabId) {
       try {
-        await chrome.tabs.sendMessage(tabId, {
+        const res = await chrome.tabs.sendMessage(tabId, {
           type: 'DISPATCH_PROMPT',
           payload: {
             siteName,
@@ -593,13 +638,21 @@ export default defineBackground(() => {
             isContinuation,
           },
         });
-        dispatched = true;
+        if (res?.received || res?.success) {
+          dispatched = true;
+        }
       } catch {
         // Tab might still be initializing
       }
     }
 
-    if (!dispatched) {
+    if (dispatched) {
+      // 成功派发，状态立即推进为 SENDING，消除 UI 卡死在“等待就绪”
+      const updated = await updateProviderRun(jobId, siteName, {
+        status: 'SENDING',
+      });
+      broadcastJobSync(updated);
+    } else {
       console.warn(`[Background] Could not dispatch to ${siteName} immediately, waiting for ready event`);
     }
   }
