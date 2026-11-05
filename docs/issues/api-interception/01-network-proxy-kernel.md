@@ -29,7 +29,7 @@
 - [ ] **AC-PERF (XHR 切片性能基准)**：针对 50 万字符 XHR 流式响应，`flushDelta()` 累计切片耗时 < 200ms（或相对耗时不超过原生 `responseText` 属性读取耗时的 2 倍），游标切片不得因长文本阻塞主线程超过 50ms。
 - [ ] **AC-SEMANTICS (`endReason` 与 `status` 语义解耦)**：网页 cancel 时派发 `status: 'PARTIAL', isDone: true, endReason: 'PAGE_ABORT'`；下游测试验证状态机准确判定为未完成中止，绝不误判为 `DONE`。
 - [ ] **AC-INPUT (输入叩门无损)**：textarea 与 ProseMirror/Quill 富文本测试中，文本 100% 正确填入并触发提交，且不触发原页面输入校验报错。
-- [ ] **AC10a (管道层 postMessage 硬防御单测)**：
+- [ ] **AC10a (管道层 postMessage 硬防御单测 - 接收端使用 test double / 独立校验函数，不依赖 Ticket 02)**：
   - 拒绝未注册 `streamId` 的直接 `isDone: true` 虚构握手；
   - 针对已处于终端态（`DONE` / `PARTIAL` / `ERROR`）的 `streamId`，后续延迟到来的流式增量帧 100% 丢弃；
   - 超过 `MAX_STREAM_FRAME_SIZE` 的异常帧直接拦截丢弃；
