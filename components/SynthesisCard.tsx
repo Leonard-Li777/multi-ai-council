@@ -11,6 +11,8 @@ import {
   Download,
   FileText,
   FileCode,
+  ExternalLink,
+  Play,
 } from 'lucide-react';
 import {
   revealModelIdentities,
@@ -23,17 +25,22 @@ interface SynthesisCardProps {
   synthesisRun?: SynthesisRun;
   activeJob?: ReviewJob | null;
   onFocusSynthesisTab?: () => void;
+  onTriggerSynthesis?: () => void;
+  canTriggerSynthesis?: boolean;
 }
 
 export const SynthesisCard: React.FC<SynthesisCardProps> = ({
   synthesisRun,
   activeJob,
+  onFocusSynthesisTab,
+  onTriggerSynthesis,
+  canTriggerSynthesis,
 }) => {
   const [copied, setCopied] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
   const [revealIdentities, setRevealIdentities] = useState(false);
 
-  if (!synthesisRun) return null;
+  const status = synthesisRun?.status || 'PENDING';
 
   const handleCopy = async () => {
     if (!displayText) return;
@@ -63,17 +70,17 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
     PARTIAL: { label: '部分完成', color: 'bg-amber-50 text-amber-600 border-amber-200' },
   };
 
-  const currentCfg = statusConfig[synthesisRun.status] || statusConfig.PENDING;
+  const currentCfg = statusConfig[status] || statusConfig.PENDING;
 
   // 依据是否勾选“查看模型真身”动态转换正文
   const displayText = useMemo(() => {
-    const raw = synthesisRun.finalMarkdown || '';
+    const raw = synthesisRun?.finalMarkdown || '';
     if (!raw) return '';
-    if (revealIdentities && synthesisRun.anonymousMap) {
+    if (revealIdentities && synthesisRun?.anonymousMap) {
       return revealModelIdentities(raw, synthesisRun.anonymousMap);
     }
     return raw;
-  }, [synthesisRun.finalMarkdown, revealIdentities, synthesisRun.anonymousMap]);
+  }, [synthesisRun?.finalMarkdown, revealIdentities, synthesisRun?.anonymousMap]);
 
   return (
     <div className="bg-linear-to-br from-indigo-50/70 via-white to-blue-50/70 dark:from-indigo-950/40 dark:via-slate-900 dark:to-blue-950/40 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl p-3 shadow-xs mb-3 transition-all">
@@ -85,22 +92,45 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
           </div>
           <div>
             <div className="font-bold text-xs text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-              <span>DeepSeek 终审聚合报告</span>
-              {synthesisRun.status === 'STREAMING' && (
+              <span>DeepSeek 汇总窗口</span>
+              {status === 'STREAMING' && (
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
               )}
             </div>
-            <span className="text-[10px] text-slate-400">匿名盲审 · 四层重构 · 去伪存真</span>
+            <span className="text-[10px] text-slate-400">全景综合汇总 · 零不同观点遗漏 · 全新会话提炼</span>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5">
+          {displayText && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              title={copied ? '已复制汇总内容' : '一键复制汇总内容'}
+              className="px-2 py-0.5 rounded text-indigo-700 dark:text-indigo-300 bg-indigo-100/70 dark:bg-indigo-950/80 hover:bg-indigo-200/80 dark:hover:bg-indigo-900/90 transition-colors cursor-pointer flex items-center gap-1 text-[11px] font-medium"
+            >
+              {copied ? <Check className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3 h-3" />}
+              <span>{copied ? '已复制' : '复制汇总'}</span>
+            </button>
+          )}
+
+          {onFocusSynthesisTab && (
+            <button
+              type="button"
+              onClick={onFocusSynthesisTab}
+              title="聚焦 DeepSeek 汇总标签页"
+              className="p-1 rounded text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${currentCfg.color}`}>
             {currentCfg.label}
           </span>
           <button
             onClick={() => setIsExpanded(!isExpanded)}
-            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
           >
             {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
@@ -108,7 +138,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
       </div>
 
       {/* 匿名打乱映射指示器与揭晓开关 */}
-      {Object.keys(synthesisRun.anonymousMap || {}).length > 0 && (
+      {Object.keys(synthesisRun?.anonymousMap || {}).length > 0 && (
         <div className="mb-2.5 bg-white/80 dark:bg-slate-900/80 p-2 rounded-lg border border-indigo-100/60 dark:border-indigo-900/40 text-[10px]">
           <div className="flex items-center justify-between mb-1.5">
             <span className="text-slate-400 font-medium">各模型匿名盲审对照：</span>
@@ -125,7 +155,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
             </button>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {Object.entries(synthesisRun.anonymousMap).map(([label, site]) => (
+            {Object.entries(synthesisRun?.anonymousMap || {}).map(([label, site]) => (
               <span
                 key={label}
                 className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 rounded border border-indigo-200/50 dark:border-indigo-800/50 font-mono"
@@ -145,14 +175,30 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
               {displayText}
             </div>
           ) : (
-            <div className="text-center py-6 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800">
-              {synthesisRun.status === 'WAITING_READY' || synthesisRun.status === 'SENDING'
-                ? '已打开 DeepSeek 新会话窗口，正在投递各方数据沙箱...'
-                : '终审内容生成中，请稍候...'}
+            <div className="text-center py-5 px-3 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
+              <p>
+                {status === 'WAITING_READY' || status === 'SENDING'
+                  ? '已开启 DeepSeek 全新会话窗口，正在投递各 AI 回复数据进行全景汇总...'
+                  : status === 'STREAMING'
+                  ? 'DeepSeek 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...'
+                  : '等待各 AI 站点完成回复后，将自动调用 DeepSeek 开启全新会话进行全景汇总（严格综合全部回复、不遗漏任何不同观点）。'}
+              </p>
+              {status === 'PENDING' && canTriggerSynthesis && onTriggerSynthesis && (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={onTriggerSynthesis}
+                    className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium inline-flex items-center gap-1 shadow-2xs transition-colors cursor-pointer not-italic"
+                  >
+                    <Play className="w-3 h-3 fill-current" />
+                    <span>立即触发 DeepSeek 汇总</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
-          {synthesisRun.finalMarkdown && (
+          {synthesisRun?.finalMarkdown && (
             <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/60">
               <div className="flex items-center gap-1.5">
                 {activeJob && (
@@ -182,7 +228,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                 className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
               >
                 {copied ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
-                <span>{copied ? '已复制' : '复制定稿'}</span>
+                <span>{copied ? '已复制' : '一键复制汇总内容'}</span>
               </button>
             </div>
           )}

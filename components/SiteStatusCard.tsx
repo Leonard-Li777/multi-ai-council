@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { ProviderRun, ProviderStatus } from '../lib/types/review-job';
 import DOMPurify from 'dompurify';
 import {
@@ -10,6 +10,8 @@ import {
   ShieldAlert,
   XCircle,
   SkipForward,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 interface SiteStatusCardProps {
@@ -50,6 +52,19 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
   const status = run?.status || 'PENDING';
   const cfg = STATUS_CONFIG[status];
   const responseText = run?.cleanedResponse || run?.responseSnapshot || '';
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async (e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!responseText) return;
+    try {
+      await navigator.clipboard.writeText(responseText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.warn('[SiteStatusCard] Copy failed:', err);
+    }
+  };
 
   // 纯文本简单安全展示，防止脚本注入
   const sanitizedPreview = DOMPurify.sanitize(responseText);
@@ -93,6 +108,16 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
         </div>
 
         <div className="flex items-center gap-1">
+          {responseText && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              title={copied ? '已复制该回复' : '一键复制该 AI 回复内容'}
+              className="p-1 rounded text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/60 transition-colors cursor-pointer flex items-center gap-0.5"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            </button>
+          )}
           {canSkip && onSkip && (
             <button
               type="button"
@@ -211,9 +236,17 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
       {/* 回答实时抓取预览 */}
       {sanitizedPreview ? (
         <div className="mt-1">
-          <div className="text-[11px] text-slate-400 mb-1 flex justify-between">
-            <span>实时抓取（已剥离思考块）</span>
-            <span>{sanitizedPreview.length} 字</span>
+          <div className="text-[11px] text-slate-400 mb-1 flex items-center justify-between">
+            <span>实时抓取（已剥离思考块 · {sanitizedPreview.length} 字）</span>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 flex items-center gap-1 cursor-pointer font-medium"
+              title="一键复制回复内容"
+            >
+              {copied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
+              <span>{copied ? '已复制' : '复制内容'}</span>
+            </button>
           </div>
           <div className="text-xs text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-950/50 p-2.5 rounded-lg max-h-40 overflow-y-auto font-mono whitespace-pre-wrap leading-relaxed border border-slate-100 dark:border-slate-800/80">
             {sanitizedPreview}

@@ -190,48 +190,52 @@ export default defineContentScript({
 
         console.log(`[DeepSeekContent] Received SYNTHESIS prompt for Job ${jobId}`);
 
-        // 1. 检查页面阻断状态
-        const blocker = await deepSeekAdapter.checkBlocker();
-        if (blocker === 'CAPTCHA') {
-          send({
-            type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'BLOCKED_CAPTCHA', errorReason: '终审检测到人机验证，请人工通过' },
-          });
-          return;
-        }
-        if (blocker === 'NOT_LOGGED_IN') {
-          send({
-            type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'BLOCKED_LOGIN', errorReason: '终审检测到未登录状态，请先登录 DeepSeek' },
-          });
-          return;
-        }
+        try {
+          // 1. 检查页面阻断状态
+          const blocker = await deepSeekAdapter.checkBlocker();
+          if (blocker === 'CAPTCHA') {
+            send({
+              type: 'SYNTHESIS_STATUS_CHANGE',
+              payload: { jobId, status: 'BLOCKED_CAPTCHA', errorReason: '终审检测到人机验证，请人工通过' },
+            });
+            return;
+          }
+          if (blocker === 'NOT_LOGGED_IN') {
+            send({
+              type: 'SYNTHESIS_STATUS_CHANGE',
+              payload: { jobId, status: 'BLOCKED_LOGIN', errorReason: '终审检测到未登录状态，请先登录 DeepSeek' },
+            });
+            return;
+          }
 
-        // 2. 标记状态为 SENDING
-        send({
-          type: 'SYNTHESIS_STATUS_CHANGE',
-          payload: { jobId, status: 'SENDING' },
-        });
+          // 2. 强制开启全新会话，隔离历史上下文
+          await deepSeekAdapter.createNewChat();
 
-        // 3. 模拟写入并提交
-        const sent = await deepSeekAdapter.sendPrompt(metaPrompt);
-        if (!sent) {
+          // 3. 标记状态为 SENDING
           send({
             type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'FAILED', errorReason: '终审提示词注入或点击发送失败' },
+            payload: { jobId, status: 'SENDING' },
           });
-          return;
-        }
 
-        // 4. 校验提交状态
-        const validated = await deepSeekAdapter.validateSubmission();
-        if (!validated) {
-          send({
-            type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'FAILED', errorReason: '终审提交后页面无响应' },
-          });
-          return;
-        }
+          // 4. 模拟写入并提交
+          const sent = await deepSeekAdapter.sendPrompt(metaPrompt);
+          if (!sent) {
+            send({
+              type: 'SYNTHESIS_STATUS_CHANGE',
+              payload: { jobId, status: 'FAILED', errorReason: '终审提示词注入或点击发送失败' },
+            });
+            return;
+          }
+
+          // 5. 校验提交状态
+          const validated = await deepSeekAdapter.validateSubmission();
+          if (!validated) {
+            send({
+              type: 'SYNTHESIS_STATUS_CHANGE',
+              payload: { jobId, status: 'FAILED', errorReason: '终审提交后页面无响应' },
+            });
+            return;
+          }
 
         // 5. 标记为 STREAMING 并监听生成
         send({
@@ -274,6 +278,17 @@ export default defineContentScript({
             });
           }
         );
+        } catch (err) {
+          console.error('[DeepSeekContent] Synthesis dispatch error:', err);
+          send({
+            type: 'SYNTHESIS_STATUS_CHANGE',
+            payload: {
+              jobId,
+              status: 'FAILED',
+              errorReason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       }
     };
 

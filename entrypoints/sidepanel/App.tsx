@@ -420,12 +420,14 @@ export const App: React.FC = () => {
         {/* 视图2：终审报告与各模型执行详情列表（仅在面板内部独立滚动） */}
         {activeJob && activeTab === 'report' && (
           <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-            {activeJob.synthesisRun && (
-              <SynthesisCard
-                synthesisRun={activeJob.synthesisRun}
-                activeJob={activeJob}
-              />
-            )}
+            {/* 顶层 DeepSeek 汇总窗口：汇集全部 AI 回复并在全新会话中提炼 */}
+            <SynthesisCard
+              synthesisRun={activeJob.synthesisRun}
+              activeJob={activeJob}
+              onFocusSynthesisTab={() => handleFocusTab('DeepSeek')}
+              onTriggerSynthesis={handleFastForward}
+              canTriggerSynthesis={(quorumProgress?.completedCount || 0) > 0}
+            />
 
             <div className="space-y-1.5">
               <div className="flex items-center justify-between px-0.5 pt-1">
