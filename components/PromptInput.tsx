@@ -37,9 +37,9 @@ export const PromptInput: React.FC<PromptInputProps> = ({
   const isManuallyOverridden = manualOverride !== null;
 
   return (
-    <div className="bg-white dark:bg-slate-900 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs mb-3">
+    <div className="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
       {/* 延伸判定徽标与一键纠正栏 */}
-      <div className="flex items-center justify-between mb-2">
+      <div className="shrink-0 flex items-center justify-between mb-2">
         <div className="flex items-center gap-1.5 flex-wrap">
           {isContinuation ? (
             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
@@ -68,44 +68,41 @@ export const PromptInput: React.FC<PromptInputProps> = ({
         </button>
       </div>
 
-      {/* 会话映射详细状态条：无论输入是否为空，只要存在历史会话上下文即稳定呈现 */}
+      {/* 会话映射简要状态条 */}
       {(activeConversationUrl || lastPrompt) && (
-        <div className="text-[11px] bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg mb-2 text-slate-500 border border-slate-100 dark:border-slate-800 flex flex-col gap-1">
-          <div className="flex items-center justify-between text-[10px] font-medium">
-            <span className="text-slate-400">当前会话映射状态:</span>
-            <span className={isContinuation ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'}>
-              {isContinuation ? '● 准备发往既有会话' : '○ 准备新开独立窗口'}
-            </span>
+        <div className="shrink-0 text-[11px] bg-slate-50 dark:bg-slate-800/60 px-2.5 py-1.5 rounded-lg mb-2 text-slate-500 border border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 truncate min-w-0">
+            {lastPrompt ? (
+              <>
+                <MessageSquare className="w-3 h-3 shrink-0 text-slate-400" />
+                <span className="truncate">上轮: <span className="text-slate-700 dark:text-slate-300 font-medium">"{lastPrompt}"</span></span>
+              </>
+            ) : (
+              <>
+                <LinkIcon className="w-2.5 h-2.5 shrink-0 text-slate-400" />
+                <span className="truncate">{activeConversationUrl}</span>
+              </>
+            )}
           </div>
-          {lastPrompt && (
-            <div className="flex items-center gap-1.5 truncate">
-              <MessageSquare className="w-3 h-3 shrink-0 text-slate-400" />
-              <span className="truncate">上轮话题: <span className="text-slate-700 dark:text-slate-300 font-medium">"{lastPrompt}"</span></span>
-            </div>
-          )}
-          {activeConversationUrl && (
-            <div className="flex items-center gap-1.5 truncate text-[10px] text-slate-400">
-              <LinkIcon className="w-2.5 h-2.5 shrink-0" />
-              <span className="truncate">{activeConversationUrl}</span>
-            </div>
-          )}
+          <span className={`shrink-0 text-[10px] font-medium ${isContinuation ? 'text-emerald-600 dark:text-emerald-400' : 'text-blue-600 dark:text-blue-400'}`}>
+            {isContinuation ? '● 发往既有会话' : '○ 开独立新窗口'}
+          </span>
         </div>
       )}
 
-      {/* 文本输入框 */}
-      <div className="relative">
+      {/* 文本输入框容器：充满剩余垂直高度，仅内部可滚动 */}
+      <div className="flex-1 min-h-0 relative flex flex-col">
         <textarea
-          rows={4}
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="请输入需要多模型协同审核或提问的提示词..."
-          className="w-full text-xs p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all resize-none"
+          placeholder="请输入需要多模型协同审核或提问的提示词...&#10;&#10;输入框将自适应填满剩余空间，仅此处支持滚屏浏览。"
+          className="w-full flex-1 min-h-0 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-hidden focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all resize-none overflow-y-auto text-xs leading-relaxed"
         />
       </div>
 
-      <div className="flex items-center justify-between mt-1 text-[11px] text-slate-400">
-        <span>支持回车换行，内容自动保存</span>
+      <div className="shrink-0 flex items-center justify-between pt-1.5 text-[11px] text-slate-400">
+        <span>支持回车换行，自动保存</span>
         <span>{value.length} 字符</span>
       </div>
     </div>
