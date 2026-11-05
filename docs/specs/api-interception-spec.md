@@ -1,9 +1,9 @@
-# API 旁路拦截流式应答与轻量双轨架构技术规格说明书 (API Stream Interception Spec v2.1)
+# API 旁路拦截流式应答与轻量双轨架构技术规格说明书 (API Stream Interception Spec v2.2)
 
-- **文档状态**: 现行 (Approved - v2.1 收敛终审版)
+- **文档状态**: 现行 (Approved - v2.2 终审基准版，已达到进入 TDD 编码的物理自洽基线，经四大破坏性测试后进入生产级)
 - **环级归属**: 第 3 环 (L3 Deep Specs & PRDs)
 - **关联上级**: [系统架构与工程规范](../developer/standards/architecture.md)
-- **版本**: v2.1 (2026-11-05)
+- **版本**: v2.2 (2026-11-05)
 
 ---
 
@@ -87,23 +87,51 @@ export default defineContentScript({
 #### 2.2.1 极简透明分流与防御细则 (<100 行)
 `MAIN` 世界脚本遵循**零业务逻辑、单管道原位透传、Fail-Open** 原则：
 
-1. **Proxy 伪装拦截 `window.fetch`**：
+1. **Proxy 伪装拦截 `window.fetch` 与 Request Body 最佳努力校验**：
    - 使用 `new Proxy(originalFetch, { apply })` 拦截，通过 `Object.defineProperty(window, 'fetch', { value: proxy, ...originalDescriptor })` 保留原生属性描述符，降低风控评分；
-2. **`TransformStream` 原位单管道透传（绝不使用 `res.clone()` 或 `tee()`）**：
+   - **请求体提取最佳努力 (Best-Effort)**：支持 `fetch(url, init)`、`fetch(Request)` 以及流式 body 场景。仅在 body 为 `string` 或能安全读取时尝试提取特征；**严禁直接调用原 Request 的 `text()` 破坏原请求**；解析失败或不可读时绝不阻断，降级为 `requestKind = 'UNKNOWN'` 并基于 URL 白名单与互斥锁兜底，绝不让请求体解析失败导致 `fetch` 抛错；
+2. **`TransformStream` 原位单管道透传（显式实现 `cancel` 钩子，绝不使用 `res.clone()` 或 `tee()`）**：
    - 前置门卫：仅对 `res.body` 存在且未被锁定的目标 API 响应介入；
-   - 单管道绑定：`const ts = new TransformStream({ transform(chunk, ctrl) { ... } }); const newRes = new Response(rawBody.pipeThrough(ts), res);`；
+   - 单管道绑定：
+     ```ts
+     const ts = new TransformStream({
+       transform(chunk, ctrl) {
+         ctrl.enqueue(chunk); // 必须首先原样透传给宿主前端
+         try {
+           decodeAndBufferDelta(chunk); // 旁路只读解析
+         } catch {
+           /* Fail-Open: 仅记录或静默，严禁 ctrl.error() */
+         }
+       },
+       flush(ctrl) {
+         // 宿主正常 close 触发 EOF 时执行：派发剩余缓冲并标记 DONE
+         flushRemainingBuffer('DONE');
+       },
+       cancel(reason) {
+         // 关键防御：用户在网页端点击 Stop 或原页面 reader cancel 时触发（不一定走 flush）
+         // 必须在此彻底清空 lineBuffer、派发 status: 'PARTIAL', isDone: true 并释放旁路锁
+         handleStreamCancelled(reason);
+       },
+     });
+     const newRes = new Response(rawBody.pipeThrough(ts), res);
+     ```
    - **属性伪装**：通过 `Object.defineProperty(newRes, 'url', { value: res.url })` 等还原只读属性；
    - **Fail-Open 铁律**：`transform` 内所有旁路逻辑必须 `try...catch`，**异常仅丢弃旁路数据，严禁调用 `ctrl.error()` 击穿宿主请求**；
-3. **`XMLHttpRequest` 原型代理（覆盖 Gemini 与降级管线）**：
+3. **`XMLHttpRequest` 原型代理（双保险监听覆盖 Gemini 与降级管线）**：
    - 拦截 `XMLHttpRequest.prototype.open` 与 `send`，使用 `WeakMap<XMLHttpRequest, Context>` 隔离元数据（0 实例污染）；
    - **状态门卫**：严格检查 `this.responseType === '' || this.responseType === 'text'`，防止在二进制类型下读取 `responseText` 引发 `InvalidStateError`；
-   - 监听 `progress` 事件增量切片并在 `readyState === 4` 时 flush；
+   - **双保险监听与增量切片**：同时挂载 `progress` 与 `readystatechange` (`readyState === 3 || readyState === 4`)，两者统一调用 `flushDelta()` 并由 `offset` 指针去重推进，杜绝弱网或特殊事件顺序导致的漏帧；终态在 `readyState === 4` 时执行终态 flush；
+   - **字符串切片复杂度防御**：增量只切分 `responseText.slice(offset)`，维护游标推进，避免全量重拷；
 4. **持久化流式解码与 50ms 批量节流**：
    - 持有同一个 `TextDecoder('utf-8')` 实例，每块调用 `decoder.decode(chunk, { stream: true })`，彻底消灭汉字跨包截断导致的 `\uFFFD` 乱码；
    - IPC 广播采用 `50ms` 节流批量聚合，防止高频 Token 触发 IPC 洪水；
-5. **安全同源通信与输入校验**：
+5. **安全同源通信与 postMessage 硬核防欺骗过滤**：
    - 目标源必须指定为 `window.location.origin`，严禁使用通配符 `'*'`；
-   - 隔离层严格校验 `event.source === window`、`streamId` 已注册、`sequence` 单调递增，杜绝跨 iframe 窃听与伪造注入。
+   - 隔离层严格校验 `event.source === window`，并执行以下**硬防御规则**：
+     - **单帧体积上限**：单帧 payload 大小硬限制为 1MB，超限立即拦截并丢弃，防爆内存；
+     - **终端态硬锁**：若对应 `streamId` 已处于终端态（`DONE` / `PARTIAL` / `ERROR`），坚决丢弃后续流式增量帧，杜绝延迟僵尸数据倒灌；
+     - **虚构终态拦截**：拒绝未在当前活跃表注册的未知 `streamId` 直接发送 `isDone: true`；
+     - **序列单调性**：`sequence` 必须严格单调递增，乱序或倒退帧直接丢弃。
 
 ### 2.3 调度与输入叩门分流
 针对不同站点的前端编辑器架构，采用双轨叩门策略：
@@ -180,7 +208,7 @@ export type InterceptorMessage = {
 | **Claude** | `/api/organizations/.*/completion` | SSE (`text/event-stream`) | **Delta (增量切片)** | 提取 `content_block_delta.delta.text`，累加到正文；遇到 `message_stop` 或 `[DONE]` 标记完成。 |
 | **Qwen** | `/api/` 且包含 `chat` | SSE (`text/event-stream`) | **Delta (增量切片)** | 提取 `output.text` 或 `delta.content`，按累加模型维护；遇到流终止完成。 |
 | **Wenxin** | `/eb/chat/conversation` | Chunked JSON Stream | **Snapshot / Delta 混合** | 识别返回的 `result` 字段，维护去重累加缓冲区；遇到 `is_end: true` 标记完成。 |
-| **Gemini** | `StreamGenerate` 或 `assistant.lamda` | Batchexecute RPC 文本流 (XHR/Fetch) | **RPC 嵌套数组解包** | 采用“长度提示 + 括号配对”分块解包；剔除 `)]}'\n`；优先定位 `wrb.fr` 内层文本块；未命中按**排除用户 prompt 回显的首选候选节点**降级。 |
+| **Gemini** | `StreamGenerate` 或 `assistant.lamda` | Batchexecute RPC 文本流 (XHR/Fetch) | **RPC 嵌套数组解包** | 采用“长度提示 + 括号配对”分块解包；剔除 `)]}'\n`；按三级优先级提取：<br>① 优先定位 `inner[4][0][1][0]` 标准正文槽位；<br>② 若结构偏移，遍历候选数组提取首个排除用户 Prompt 回显且长度匹配的有效文本节点；<br>③ 极端未命中则标记 `PARTIAL` 降级，绝不抛出语法错误。 |
 
 ### 3.3 轻量独立 `IncrementalSSEParser` 规范
 在 ISOLATED 层维护独立的轻量分帧器（约 70 行）：
