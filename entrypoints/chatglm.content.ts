@@ -1,6 +1,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { chatGLMAdapter } from '../lib/adapters/chatglm.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+import { NetworkListener } from '../lib/interceptor/network-listener';
+import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
 
 export default defineContentScript({
   matches: ['https://chatglm.cn/*'],
@@ -16,6 +18,10 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+
+    // --- 网络层拦截集成 (双轨融合) ---
+    let networkListener: NetworkListener | null = null;
+    let networkBridgeDestroy: (() => void) | null = null;
 
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'ChatGLM') {
@@ -79,50 +85,52 @@ export default defineContentScript({
             return;
           }
 
+          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'ChatGLM', jobId, status: 'STREAMING' },
           });
 
-          if (stopListening) stopListening();
+          if (stopListening) {
+            stopListening();
+            stopListening = null;
+          }
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
 
-          stopListening = chatGLMAdapter.listenGeneration(
-            (snapshot, cleaned) => {
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'ChatGLM',
-                  jobId,
-                  snapshot,
-                  cleaned,
-                  isFinished: false,
-                },
-              });
+          const { orchestrator: glmOrch, destroy: glmBridgeDestroy } = createAdapterBridge({
+            siteName: 'ChatGLM',
+            jobId,
+            sendFn: send,
+            url: 'https://chatglm.cn/chatglm/assistant-api/v1/chat/completion',
+            prompt,
+          });
+          networkBridgeDestroy = glmBridgeDestroy;
+          glmOrch.dispatchPrompt(jobId, prompt);
+
+          networkListener = new NetworkListener({
+            allowedOrigin: 'https://chatglm.cn',
+            onValidFrame: (frame) => {
+              glmOrch.handleStreamFrame(frame);
+              if (glmOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
+                console.warn('[ChatGLMContent] Network layer fallback → DOM listener activated');
+                stopListening = chatGLMAdapter.listenGeneration(
+                  (snapshot, cleaned) => {
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot, cleaned, isFinished: false } });
+                  },
+                  (finalCleaned) => {
+                    const finalUrl = chatGLMAdapter.getConversationUrl();
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGLM', jobId, status: 'DONE', conversationUrl: finalUrl } });
+                  }
+                );
+              }
             },
-            (finalCleaned) => {
-              const finalUrl = chatGLMAdapter.getConversationUrl();
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'ChatGLM',
-                  jobId,
-                  snapshot: finalCleaned,
-                  cleaned: finalCleaned,
-                  isFinished: true,
-                },
-              });
-
-              send({
-                type: 'STATUS_CHANGE',
-                payload: {
-                  siteName: 'ChatGLM',
-                  jobId,
-                  status: 'DONE',
-                  conversationUrl: finalUrl,
-                },
-              });
-            }
-          );
+            onInvalidFrame: (frame, reason) => {
+              console.warn(`[ChatGLMContent] Invalid frame rejected: ${reason}`, frame.streamId);
+            },
+          });
+          networkListener.start();
         } catch (err) {
           console.error('[ChatGLMContent] Dispatch error:', err);
           send({
@@ -239,6 +247,8 @@ export default defineContentScript({
 
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
+      networkListener?.destroy();
+      networkBridgeDestroy?.();
       clearInterval(urlCheckInterval);
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         chrome.runtime.onMessage.removeListener(runtimeMessageListener);

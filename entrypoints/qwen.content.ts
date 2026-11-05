@@ -1,6 +1,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { qwenAdapter } from '../lib/adapters/qwen.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+import { NetworkListener } from '../lib/interceptor/network-listener';
+import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
 
 export default defineContentScript({
   matches: ['https://chat.qwen.ai/*'],
@@ -16,6 +18,10 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+
+    // --- 网络层拦截集成 (双轨融合) ---
+    let networkListener: NetworkListener | null = null;
+    let networkBridgeDestroy: (() => void) | null = null;
 
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Qwen') {
@@ -83,50 +89,52 @@ export default defineContentScript({
             return;
           }
 
+          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'Qwen', jobId, status: 'STREAMING' },
           });
 
-          if (stopListening) stopListening();
+          if (stopListening) {
+            stopListening();
+            stopListening = null;
+          }
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
 
-          stopListening = qwenAdapter.listenGeneration(
-            (snapshot, cleaned) => {
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'Qwen',
-                  jobId,
-                  snapshot,
-                  cleaned,
-                  isFinished: false,
-                },
-              });
+          const { orchestrator: qwOrch, destroy: qwBridgeDestroy } = createAdapterBridge({
+            siteName: 'Qwen',
+            jobId,
+            sendFn: send,
+            url: 'https://chat.qwen.ai/api/chat',
+            prompt,
+          });
+          networkBridgeDestroy = qwBridgeDestroy;
+          qwOrch.dispatchPrompt(jobId, prompt);
+
+          networkListener = new NetworkListener({
+            allowedOrigin: 'https://chat.qwen.ai',
+            onValidFrame: (frame) => {
+              qwOrch.handleStreamFrame(frame);
+              if (qwOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
+                console.warn('[QwenContent] Network layer fallback → DOM listener activated');
+                stopListening = qwenAdapter.listenGeneration(
+                  (snapshot, cleaned) => {
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot, cleaned, isFinished: false } });
+                  },
+                  (finalCleaned) => {
+                    const finalUrl = qwenAdapter.getConversationUrl();
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'Qwen', jobId, status: 'DONE', conversationUrl: finalUrl } });
+                  }
+                );
+              }
             },
-            (finalCleaned) => {
-              const finalUrl = qwenAdapter.getConversationUrl();
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'Qwen',
-                  jobId,
-                  snapshot: finalCleaned,
-                  cleaned: finalCleaned,
-                  isFinished: true,
-                },
-              });
-
-              send({
-                type: 'STATUS_CHANGE',
-                payload: {
-                  siteName: 'Qwen',
-                  jobId,
-                  status: 'DONE',
-                  conversationUrl: finalUrl,
-                },
-              });
-            }
-          );
+            onInvalidFrame: (frame, reason) => {
+              console.warn(`[QwenContent] Invalid frame rejected: ${reason}`, frame.streamId);
+            },
+          });
+          networkListener.start();
         } catch (err) {
           console.error('[QwenContent] Dispatch error:', err);
           send({
@@ -243,6 +251,8 @@ export default defineContentScript({
 
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
+      networkListener?.destroy();
+      networkBridgeDestroy?.();
       clearInterval(urlCheckInterval);
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         chrome.runtime.onMessage.removeListener(runtimeMessageListener);

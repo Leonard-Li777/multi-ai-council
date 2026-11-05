@@ -1,6 +1,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { deepSeekAdapter } from '../lib/adapters/deepseek.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+import { NetworkListener } from '../lib/interceptor/network-listener';
+import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
 
 export default defineContentScript({
   matches: ['https://chat.deepseek.com/*'],
@@ -16,6 +18,10 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+
+    // --- 网络层拦截集成 (双轨融合) ---
+    let networkListener: NetworkListener | null = null;
+    let networkBridgeDestroy: (() => void) | null = null;
 
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'DeepSeek') {
@@ -79,7 +85,7 @@ export default defineContentScript({
             return;
           }
 
-          // 6. 标记为 STREAMING 并启动监听
+          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'DeepSeek', jobId, status: 'STREAMING' },
@@ -87,45 +93,44 @@ export default defineContentScript({
 
           if (stopListening) {
             stopListening();
+            stopListening = null;
           }
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
 
-          stopListening = deepSeekAdapter.listenGeneration(
-            (snapshot, cleaned) => {
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'DeepSeek',
-                  jobId,
-                  snapshot,
-                  cleaned,
-                  isFinished: false,
-                },
-              });
+          const { orchestrator: dsOrch, destroy: dsBridgeDestroy } = createAdapterBridge({
+            siteName: 'DeepSeek',
+            jobId,
+            sendFn: send,
+            url: 'https://chat.deepseek.com/api/v0/chat/completion',
+            prompt,
+          });
+          networkBridgeDestroy = dsBridgeDestroy;
+          dsOrch.dispatchPrompt(jobId, prompt);
+
+          networkListener = new NetworkListener({
+            allowedOrigin: 'https://chat.deepseek.com',
+            onValidFrame: (frame) => {
+              dsOrch.handleStreamFrame(frame);
+              if (dsOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
+                console.warn('[DeepSeekContent] Network layer fallback → DOM listener activated');
+                stopListening = deepSeekAdapter.listenGeneration(
+                  (snapshot, cleaned) => {
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'DeepSeek', jobId, snapshot, cleaned, isFinished: false } });
+                  },
+                  (finalCleaned) => {
+                    const finalUrl = deepSeekAdapter.getConversationUrl();
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'DeepSeek', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'DeepSeek', jobId, status: 'DONE', conversationUrl: finalUrl } });
+                  }
+                );
+              }
             },
-            (finalCleaned) => {
-              const finalUrl = deepSeekAdapter.getConversationUrl();
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'DeepSeek',
-                  jobId,
-                  snapshot: finalCleaned,
-                  cleaned: finalCleaned,
-                  isFinished: true,
-                },
-              });
-
-              send({
-                type: 'STATUS_CHANGE',
-                payload: {
-                  siteName: 'DeepSeek',
-                  jobId,
-                  status: 'DONE',
-                  conversationUrl: finalUrl,
-                },
-              });
-            }
-          );
+            onInvalidFrame: (frame, reason) => {
+              console.warn(`[DeepSeekContent] Invalid frame rejected: ${reason}`, frame.streamId);
+            },
+          });
+          networkListener.start();
         } catch (err) {
           console.error('[DeepSeekContent] Dispatch error:', err);
           send({
@@ -349,6 +354,8 @@ export default defineContentScript({
     // 卸载时清理监听
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
+      networkListener?.destroy();
+      networkBridgeDestroy?.();
       clearInterval(urlCheckInterval);
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         chrome.runtime.onMessage.removeListener(runtimeMessageListener);

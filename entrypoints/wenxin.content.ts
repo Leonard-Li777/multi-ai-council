@@ -1,6 +1,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { wenxinAdapter } from '../lib/adapters/wenxin.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+import { NetworkListener } from '../lib/interceptor/network-listener';
+import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
 
 export default defineContentScript({
   matches: ['https://wenxin.baidu.com/*', 'https://yiyan.baidu.com/*'],
@@ -16,6 +18,10 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+
+    // --- 网络层拦截集成 (双轨融合) ---
+    let networkListener: NetworkListener | null = null;
+    let networkBridgeDestroy: (() => void) | null = null;
 
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Wenxin') {
@@ -80,50 +86,52 @@ export default defineContentScript({
             return;
           }
 
+          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'Wenxin', jobId, status: 'STREAMING' },
           });
 
-          if (stopListening) stopListening();
+          if (stopListening) {
+            stopListening();
+            stopListening = null;
+          }
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
 
-          stopListening = wenxinAdapter.listenGeneration(
-            (snapshot, cleaned) => {
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'Wenxin',
-                  jobId,
-                  snapshot,
-                  cleaned,
-                  isFinished: false,
-                },
-              });
+          const { orchestrator: wxOrch, destroy: wxBridgeDestroy } = createAdapterBridge({
+            siteName: 'Wenxin',
+            jobId,
+            sendFn: send,
+            url: 'https://yiyan.baidu.com/eb/chat/conversation',
+            prompt,
+          });
+          networkBridgeDestroy = wxBridgeDestroy;
+          wxOrch.dispatchPrompt(jobId, prompt);
+
+          networkListener = new NetworkListener({
+            allowedOrigin: window.location.origin,
+            onValidFrame: (frame) => {
+              wxOrch.handleStreamFrame(frame);
+              if (wxOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
+                console.warn('[WenxinContent] Network layer fallback → DOM listener activated');
+                stopListening = wenxinAdapter.listenGeneration(
+                  (snapshot, cleaned) => {
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Wenxin', jobId, snapshot, cleaned, isFinished: false } });
+                  },
+                  (finalCleaned) => {
+                    const finalUrl = wenxinAdapter.getConversationUrl();
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Wenxin', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'Wenxin', jobId, status: 'DONE', conversationUrl: finalUrl } });
+                  }
+                );
+              }
             },
-            (finalCleaned) => {
-              const finalUrl = wenxinAdapter.getConversationUrl();
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'Wenxin',
-                  jobId,
-                  snapshot: finalCleaned,
-                  cleaned: finalCleaned,
-                  isFinished: true,
-                },
-              });
-
-              send({
-                type: 'STATUS_CHANGE',
-                payload: {
-                  siteName: 'Wenxin',
-                  jobId,
-                  status: 'DONE',
-                  conversationUrl: finalUrl,
-                },
-              });
-            }
-          );
+            onInvalidFrame: (frame, reason) => {
+              console.warn(`[WenxinContent] Invalid frame rejected: ${reason}`, frame.streamId);
+            },
+          });
+          networkListener.start();
         } catch (err) {
           console.error('[WenxinContent] Dispatch error:', err);
           send({
@@ -240,6 +248,8 @@ export default defineContentScript({
 
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
+      networkListener?.destroy();
+      networkBridgeDestroy?.();
       clearInterval(urlCheckInterval);
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         chrome.runtime.onMessage.removeListener(runtimeMessageListener);

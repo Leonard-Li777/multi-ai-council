@@ -14,10 +14,12 @@ flowchart TD
         I1["Ticket 01: MAIN World 网络代理内核与输入叩门增强<br>(Proxy Fetch/XHR + TransformStream + endReason 管道)"]
         I2["Ticket 02: 协议解析器矩阵与因果双轨状态机<br>(SSE + Snapshot + Delta + Reasoning 流 + UNKNOWN 隔离)"]
         I3["Ticket 03: Gemini RPC 嵌套解包与全站端到端回归验收<br>(Batchexecute + 8MB 阈值校准 + postMessage 硬防御 AC10)"]
+        I4["Ticket 04: 网络层拦截集成至适配器双轨融合<br>(NetworkListener + AdapterBridge + 7站 Content Script 切换)"]
     end
 
     I1 -->|阻塞依赖| I2
     I2 -->|阻塞依赖| I3
+    I3 -->|阻塞依赖| I4
 ```
 
 ## 2. 切片分工与状态矩阵
@@ -27,6 +29,7 @@ flowchart TD
 | **01** | `01-network-proxy-kernel.md` | `MAIN` World 网络代理内核与输入叩门增强 | AFK | completed | 无 (Frontier) |
 | **02** | `02-protocol-parsers-and-state-machine.md` | 协议解析器矩阵与因果双轨状态机 | AFK | completed | 依赖 Ticket 01 |
 | **03** | `03-gemini-rpc-and-e2e-regression.md` | Gemini RPC 嵌套解包与全站端到端回归验收 | AFK | completed | 依赖 Ticket 02 |
+| **04** | `04-network-to-adapter-integration.md` | 网络层拦截集成至适配器双轨融合 | AFK | completed | 依赖 Ticket 03 |
 
 ## 3. 跨工单核心契约 (Cross-Ticket Invariants)
 
@@ -36,3 +39,4 @@ flowchart TD
 4. **安全防御分层测试 (AC10 拆分)**：
    - **AC10a (Ticket 01 - 管道层单元测试)**：验证未知 `streamId` 的 `isDone: true` 拒收、终端态后增量 100% 丢弃、超限帧拦截、`sequence` 非单调拒收；
    - **AC10b (Ticket 03 - 端到端回归测试)**：验证网页伪造同源 `postMessage` 攻击下，Background 与 Side Panel 的 `ProviderRun` 状态 0 污染、0 异常推进。
+5. **双轨因果降级保障 (Ticket 04)**：Content Script 中网络监听优先；仅当 `StreamOrchestrator` 达到 15s TTFT 超时或网络异常进入 `DOM_FALLBACK` 状态时，才按需挂载 DOM `listenGeneration` 监听器，确保弱网/未命中站点的 100% 可用性。

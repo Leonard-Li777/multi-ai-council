@@ -1,6 +1,8 @@
 import { defineContentScript } from 'wxt/utils/define-content-script';
 import { chatGPTAdapter } from '../lib/adapters/chatgpt.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
+import { NetworkListener } from '../lib/interceptor/network-listener';
+import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
 
 export default defineContentScript({
   matches: ['https://chatgpt.com/*'],
@@ -16,6 +18,11 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+
+    // --- 网络层拦截集成 (双轨融合) ---
+    // NetworkListener 在 ISOLATED World 监听来自 MAIN World BatchedFrameDispatcher 的帧
+    let networkListener: NetworkListener | null = null;
+    let networkBridgeDestroy: (() => void) | null = null;
 
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'ChatGPT') {
@@ -102,7 +109,7 @@ export default defineContentScript({
             return;
           }
 
-          // 6. 标记为 STREAMING 并启动监听
+          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'ChatGPT', jobId, status: 'STREAMING' },
@@ -110,45 +117,51 @@ export default defineContentScript({
 
           if (stopListening) {
             stopListening();
+            stopListening = null;
           }
+          // 销毁上一轮网络层资源
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
 
-          stopListening = chatGPTAdapter.listenGeneration(
-            (snapshot, cleaned) => {
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'ChatGPT',
-                  jobId,
-                  snapshot,
-                  cleaned,
-                  isFinished: false,
-                },
-              });
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 → PortMessage
+          const { orchestrator, destroy: bridgeDestroy } = createAdapterBridge({
+            siteName: 'ChatGPT',
+            jobId,
+            sendFn: send,
+            url: 'https://chatgpt.com/backend-api/conversation',
+            prompt,
+          });
+          networkBridgeDestroy = bridgeDestroy;
+
+          // orchestrator 开始等待流（dispatchPrompt 设置 PENDING_STREAM 状态）
+          orchestrator.dispatchPrompt(jobId, prompt);
+
+          // 创建 NetworkListener 路由合法帧到 orchestrator
+          networkListener = new NetworkListener({
+            allowedOrigin: 'https://chatgpt.com',
+            onValidFrame: (frame) => {
+              orchestrator.handleStreamFrame(frame);
+
+              // DOM_FALLBACK：网络层超时或异常时降级到 DOM 监听
+              if (orchestrator.getState() === 'DOM_FALLBACK' && !stopListening) {
+                console.warn('[ChatGPTContent] Network layer fallback → DOM listener activated');
+                stopListening = chatGPTAdapter.listenGeneration(
+                  (snapshot, cleaned) => {
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot, cleaned, isFinished: false } });
+                  },
+                  (finalCleaned) => {
+                    const finalUrl = chatGPTAdapter.getConversationUrl();
+                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGPT', jobId, status: 'DONE', conversationUrl: finalUrl } });
+                  }
+                );
+              }
             },
-            (finalCleaned) => {
-              const finalUrl = chatGPTAdapter.getConversationUrl();
-              send({
-                type: 'STREAM_UPDATE',
-                payload: {
-                  siteName: 'ChatGPT',
-                  jobId,
-                  snapshot: finalCleaned,
-                  cleaned: finalCleaned,
-                  isFinished: true,
-                },
-              });
-
-              send({
-                type: 'STATUS_CHANGE',
-                payload: {
-                  siteName: 'ChatGPT',
-                  jobId,
-                  status: 'DONE',
-                  conversationUrl: finalUrl,
-                },
-              });
-            }
-          );
+            onInvalidFrame: (frame, reason) => {
+              console.warn(`[ChatGPTContent] Invalid frame rejected: ${reason}`, frame.streamId);
+            },
+          });
+          networkListener.start();
         } catch (err) {
           console.error('[ChatGPTContent] Dispatch error:', err);
           send({
@@ -267,6 +280,8 @@ export default defineContentScript({
     // 卸载时清理监听
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
+      networkListener?.destroy();
+      networkBridgeDestroy?.();
       clearInterval(urlCheckInterval);
       if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
         chrome.runtime.onMessage.removeListener(runtimeMessageListener);
