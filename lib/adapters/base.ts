@@ -49,6 +49,20 @@ export interface AISiteAdapter {
     onUpdate: (snapshot: string, cleaned: string) => void,
     onDone: (finalCleaned: string) => void
   ): () => void;
+
+  /**
+   * 关闭异常弹窗（如提示账户切换、会话过期等）
+   */
+  dismissDialogs?(): boolean;
+
+  /**
+   * 智能自愈与状态恢复
+   */
+  autoRecoverAndContinue?(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'>;
 }
 
 class AdapterRegistry {

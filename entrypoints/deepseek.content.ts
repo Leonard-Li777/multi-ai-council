@@ -130,6 +130,50 @@ export default defineContentScript({
             },
           });
         }
+      } else if (msg.type === 'RECOVER_SITE' && msg.payload.siteName === 'DeepSeek') {
+        const { jobId, prompt } = msg.payload;
+        currentJobId = jobId;
+        console.log(`[DeepSeekContent] Executing auto-recovery for Job ${jobId}`);
+
+        try {
+          if (stopListening) stopListening();
+
+          const result = await deepSeekAdapter.autoRecoverAndContinue(
+            prompt,
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'DeepSeek', jobId, snapshot, cleaned, isFinished: false },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = deepSeekAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'DeepSeek', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true },
+              });
+              send({
+                type: 'STATUS_CHANGE',
+                payload: { siteName: 'DeepSeek', jobId, status: 'DONE', conversationUrl: finalUrl },
+              });
+            }
+          );
+
+          if (result === 'STREAMING') {
+            send({ type: 'STATUS_CHANGE', payload: { siteName: 'DeepSeek', jobId, status: 'STREAMING' } });
+          } else if (result === 'FAILED') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: '自愈重试未成功，请检查页面输入框状态' },
+            });
+          }
+        } catch (err) {
+          console.error('[DeepSeekContent] Recovery error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: String(err) },
+          });
+        }
       } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
         const { jobId, metaPrompt } = msg.payload;
         currentJobId = jobId;
@@ -250,7 +294,7 @@ export default defineContentScript({
         sendResponse({ type: 'PONG', siteName: 'DeepSeek', ready: true });
         return false;
       }
-      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT' || msg.type === 'RECOVER_SITE') {
         sendResponse({ success: true, siteName: 'DeepSeek', received: true });
         handleIncomingMessage(msg);
         return false;

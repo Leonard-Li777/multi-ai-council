@@ -223,6 +223,71 @@ export class ClaudeAdapter implements AISiteAdapter {
     };
   }
 
+  public dismissDialogs(): boolean {
+    const dialogButtons = Array.from(
+      document.querySelectorAll<HTMLElement>('div[role="dialog"] button, div[class*="modal"] button')
+    );
+    let dismissed = false;
+    for (const btn of dialogButtons) {
+      const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (text.includes('dismiss') || text.includes('close') || text.includes('ok') || text.includes('确定') || text.includes('知道了')) {
+        btn.click();
+        dismissed = true;
+      }
+    }
+    return dismissed;
+  }
+
+  public async autoRecoverAndContinue(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'> {
+    this.dismissDialogs();
+    await this.sleep(300);
+
+    const lastMsg = this.findLatestAssistantMessageElement();
+    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
+      const md = domToMarkdown(lastMsg);
+      const cleaned = (md && md.trim().length > 0) ? md : currentText;
+      onDone(cleaned);
+      return 'DONE';
+    }
+
+    if (this.findStopButton()) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    const input = this.findInputElement();
+    if (input) {
+      const inputVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (inputVal.trim().length > 0) {
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+          sendBtn.click();
+        } else {
+          const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+          input.focus();
+          input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+          input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        }
+        await this.sleep(400);
+        this.listenGeneration(onUpdate, onDone);
+        return 'STREAMING';
+      }
+    }
+
+    const sent = await this.sendPrompt(prompt);
+    if (sent) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    return 'FAILED';
+  }
+
   // --- 内部 DOM 元素查找工具 ---
 
   private findInputElement(): HTMLElement | null {

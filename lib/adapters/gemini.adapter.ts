@@ -209,18 +209,107 @@ export class GeminiAdapter implements AISiteAdapter {
     return null;
   }
 
+  public dismissDialogs(): boolean {
+    const dialogButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[role="dialog"] button, div[class*="modal"] button, mat-dialog-container button'
+      )
+    );
+    let dismissed = false;
+    for (const btn of dialogButtons) {
+      const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (
+        text.includes('dismiss') ||
+        text.includes('ok') ||
+        text.includes('got it') ||
+        text.includes('reload') ||
+        text.includes('确定') ||
+        text.includes('知道了') ||
+        text.includes('关闭')
+      ) {
+        btn.click();
+        dismissed = true;
+      }
+    }
+    return dismissed;
+  }
+
+  public async autoRecoverAndContinue(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'> {
+    this.dismissDialogs();
+    await this.sleep(300);
+
+    const lastMsg = this.findLatestAssistantMessageElement();
+    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
+      const md = domToMarkdown(lastMsg);
+      const cleaned = (md && md.trim().length > 0) ? md : currentText;
+      onDone(cleaned);
+      return 'DONE';
+    }
+
+    if (this.findStopButton()) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    const input = this.findInputElement();
+    if (input) {
+      const inputVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (inputVal.trim().length > 0) {
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+          sendBtn.click();
+        } else {
+          const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+          input.focus();
+          input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+          input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        }
+        await this.sleep(400);
+        this.listenGeneration(onUpdate, onDone);
+        return 'STREAMING';
+      }
+    }
+
+    const sent = await this.sendPrompt(prompt);
+    if (sent) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    return 'FAILED';
+  }
+
   private findStopButton(): HTMLElement | null {
     return (
-      document.querySelector<HTMLElement>('button[aria-label*="Stop"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
-      document.querySelector<HTMLElement>('button[data-test-id="stop-button"]')
+      document.querySelector<HTMLElement>('button[aria-label="Stop response"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="Stop generating"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="停止响应"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="停止生成"]') ||
+      document.querySelector<HTMLElement>('button[data-test-id="stop-button"]') ||
+      document.querySelector<HTMLElement>('button.stop-button')
     );
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
+    // 1. 查找所有 model-response 标签（Gemini 官方组件名）
+    const modelResponses = Array.from(
+      document.querySelectorAll<HTMLElement>('model-response, [data-test-id*="model-response"]')
+    );
+    if (modelResponses.length > 0) {
+      const last = modelResponses[modelResponses.length - 1]!;
+      const contentEl = last.querySelector<HTMLElement>('div.markdown, message-content, div[class*="response-container"]');
+      return contentEl || last;
+    }
+
+    // 2. 降级选择器
     const msgs = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'model-response, div[class*="response-container"], message-content, div[class*="model-response-text"], div.markdown'
+        'message-content, div[class*="model-response-text"], div[class*="response-container"], div.markdown'
       )
     );
     if (msgs.length === 0) return null;

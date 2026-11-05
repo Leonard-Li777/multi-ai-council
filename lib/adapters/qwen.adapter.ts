@@ -63,7 +63,7 @@ export class QwenAdapter implements AISiteAdapter {
 
   public async createNewChat(): Promise<void> {
     const newChatBtn = document.querySelector<HTMLElement>(
-      'button[class*="new-chat"], a[href="/"], div[class*="new-chat-btn"], button[aria-label*="新会话"]'
+      'button[class*="new-chat"], a[href="/"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"]'
     );
     if (newChatBtn && window.location.pathname !== '/') {
       newChatBtn.click();
@@ -71,11 +71,81 @@ export class QwenAdapter implements AISiteAdapter {
     }
   }
 
+  /**
+   * 自动切换模型至 Qwen 3.8 Max (或指定模型名称)
+   */
+  public async switchModel(targetModel = '3.8Max'): Promise<boolean> {
+    try {
+      const lowerTarget = targetModel.toLowerCase().replace(/[\s\-_]/g, '');
+
+      // 1. 查找可能存在的模型选择触发器
+      const triggers = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          'div[class*="model-select"], div[class*="modelSelect"], div[class*="model-trigger"], button[class*="model"], div[class*="current-model"], div[class*="select-model"], div[class*="model_name"], span[class*="model-name"], header div[role="button"], header button'
+        )
+      );
+
+      let trigger = triggers.find((t) => {
+        const text = (t.innerText || t.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
+        return text.includes('qwen') || text.includes('max') || text.includes('plus') || text.includes('3.8');
+      });
+
+      if (!trigger) {
+        const allTopClickables = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button'));
+        trigger = allTopClickables.find(
+          (el) =>
+            ((el.innerText || '').includes('Qwen') || (el.innerText || '').includes('Max')) &&
+            el.querySelector('svg') !== null &&
+            !el.closest('form, div[class*="input"]')
+        );
+      }
+
+      if (trigger) {
+        const currentText = (trigger.innerText || trigger.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
+        if (currentText.includes(lowerTarget) || currentText.includes('3.8max')) {
+          console.log('[QwenAdapter] Already on target model:', currentText);
+          return true;
+        }
+
+        // 点击展开下拉框
+        trigger.click();
+        await this.sleep(500);
+
+        // 在弹出的下拉浮层中寻找匹配项
+        const menuItems = Array.from(
+          document.querySelectorAll<HTMLElement>(
+            'div[class*="dropdown"] *, div[class*="popover"] *, div[role="menuitem"], div[class*="item"], div[class*="model-option"], div[class*="select-item"]'
+          )
+        );
+
+        const match = menuItems.find((el) => {
+          const t = (el.innerText || el.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
+          return t.includes(lowerTarget) || t.includes('3.8max') || (t.includes('3.8') && t.includes('max'));
+        });
+
+        if (match) {
+          match.click();
+          await this.sleep(400);
+          console.log('[QwenAdapter] Successfully switched model to:', match.innerText);
+          return true;
+        } else {
+          document.body.click();
+        }
+      }
+    } catch (e) {
+      console.warn('[QwenAdapter] switchModel error:', e);
+    }
+    return false;
+  }
+
   public getConversationUrl(): string {
     return window.location.href;
   }
 
   public async sendPrompt(prompt: string): Promise<boolean> {
+    // 1. 尝试先切换至指定 Qwen3.8Max 模型
+    await this.switchModel('3.8Max');
+
     this.recordBaseline();
 
     const input = this.findInputElement();
@@ -91,7 +161,8 @@ export class QwenAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      await this.sleep(200);
+      sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      await this.sleep(250);
     }
 
     const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
@@ -185,6 +256,88 @@ export class QwenAdapter implements AISiteAdapter {
     };
   }
 
+  public dismissDialogs(): boolean {
+    const dialogButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[role="dialog"] button, div[class*="modal"] button, div[role="alertdialog"] button, div[class*="dialog"] button'
+      )
+    );
+    let dismissed = false;
+    for (const btn of dialogButtons) {
+      const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (
+        text.includes('dismiss') ||
+        text.includes('ok') ||
+        text.includes('reload') ||
+        text.includes('确定') ||
+        text.includes('知道了') ||
+        text.includes('重试') ||
+        text.includes('关闭')
+      ) {
+        btn.click();
+        dismissed = true;
+      }
+    }
+    return dismissed;
+  }
+
+  /**
+   * 智能自愈与状态恢复
+   */
+  public async autoRecoverAndContinue(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'> {
+    this.dismissDialogs();
+    await this.sleep(300);
+
+    // 1. 若当前已产生了有效新回答，直接抓取完成
+    const lastMsg = this.findLatestAssistantMessageElement();
+    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
+      const md = domToMarkdown(lastMsg);
+      const cleaned = (md && md.trim().length > 0) ? md : currentText;
+      onDone(cleaned);
+      return 'DONE';
+    }
+
+    // 2. 若当前仍在流式生成中，直接挂接监听
+    if (this.findStopButton()) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    // 3. 检查输入框是否已有提示词内容
+    const input = this.findInputElement();
+    if (input) {
+      const inputVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (inputVal.trim().length > 0) {
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+          sendBtn.click();
+        } else {
+          const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+          input.focus();
+          input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+          input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        }
+        await this.sleep(400);
+        this.listenGeneration(onUpdate, onDone);
+        return 'STREAMING';
+      }
+    }
+
+    // 4. 输入框为空，重发提示词
+    const sent = await this.sendPrompt(prompt);
+    if (sent) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    return 'FAILED';
+  }
+
   private findInputElement(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('#chat-input') ||
@@ -197,20 +350,24 @@ export class QwenAdapter implements AISiteAdapter {
 
   private findSendButton(): HTMLElement | null {
     const direct = document.querySelector<HTMLElement>(
-      'button[class*="send-button"], button[aria-label*="发送"], div[role="button"][class*="send"], button[class*="send"]'
+      'button[class*="send-button"], button[class*="sendBtn"], div[class*="sendBtn"], div[class*="send-btn"], button[aria-label*="发送"], div[role="button"][class*="send"], button[class*="send"]'
     );
     if (direct) return direct;
 
     const input = this.findInputElement();
-    const container = input ? (input.closest('form, div[class*="input"], div[class*="chat-input"], div[class*="bottom"], main') as HTMLElement | null) : null;
-    if (container) {
-      const candidates = Array.from(container.querySelectorAll<HTMLElement>('div[role="button"], button'));
-      const candidate = candidates.reverse().find(b => {
+    let parent = input?.parentElement;
+    for (let i = 0; i < 6 && parent; i++) {
+      const candidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], button'));
+      const found = candidates.reverse().find(b => {
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('audio')) return false;
-        return b.querySelector('svg') !== null;
+        const cls = (b.className || '').toString().toLowerCase();
+        if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('audio') || cls.includes('upload')) {
+          return false;
+        }
+        return b.querySelector('svg') !== null || cls.includes('send') || cls.includes('submit');
       });
-      if (candidate) return candidate;
+      if (found) return found;
+      parent = parent.parentElement;
     }
     return null;
   }

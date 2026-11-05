@@ -299,12 +299,44 @@ export default defineBackground(() => {
     } else if (msg.type === 'RETRY_SITE') {
       const activeJob = await getActiveJob();
       if (activeJob) {
-        const updated = await updateProviderRun(activeJob.id, msg.payload.siteName, {
-          status: 'WAITING_READY',
-          errorReason: undefined,
-        });
-        broadcastJobSync(updated);
-        await ensureSiteTabAndDispatch(msg.payload.siteName, activeJob);
+        const siteName = msg.payload.siteName;
+        console.log(`[Background] RETRY_SITE requested for ${siteName}, attempting smart recovery...`);
+
+        // 1. 先尝试向已打开的 Content Script 派发 RECOVER_SITE 执行就地自愈
+        let recovered = false;
+        const port = contentPorts.get(siteName);
+        if (port) {
+          try {
+            port.postMessage({
+              type: 'RECOVER_SITE',
+              payload: { siteName, jobId: activeJob.id, prompt: activeJob.originalPrompt },
+            });
+            recovered = true;
+          } catch {}
+        }
+
+        const tabId = siteTabs.get(siteName);
+        if (!recovered && tabId) {
+          try {
+            const res = await chrome.tabs.sendMessage(tabId, {
+              type: 'RECOVER_SITE',
+              payload: { siteName, jobId: activeJob.id, prompt: activeJob.originalPrompt },
+            });
+            if (res && (res.received || res.success)) {
+              recovered = true;
+            }
+          } catch {}
+        }
+
+        // 2. 若当前标签页无法就地自愈，降级为重新调度该站
+        if (!recovered) {
+          const updated = await updateProviderRun(activeJob.id, siteName, {
+            status: 'WAITING_READY',
+            errorReason: undefined,
+          });
+          broadcastJobSync(updated);
+          await ensureSiteTabAndDispatch(siteName, activeJob);
+        }
       }
     } else if (msg.type === 'EXTEND_TIMEOUT') {
       const activeJob = await getActiveJob();

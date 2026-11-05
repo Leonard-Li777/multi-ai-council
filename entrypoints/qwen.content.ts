@@ -127,6 +127,50 @@ export default defineContentScript({
             },
           });
         }
+      } else if (msg.type === 'RECOVER_SITE' && msg.payload.siteName === 'Qwen') {
+        const { jobId, prompt } = msg.payload;
+        currentJobId = jobId;
+        console.log(`[QwenContent] Executing auto-recovery for Job ${jobId}`);
+
+        try {
+          if (stopListening) stopListening();
+
+          const result = await qwenAdapter.autoRecoverAndContinue(
+            prompt,
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Qwen', jobId, snapshot, cleaned, isFinished: false },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = qwenAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true },
+              });
+              send({
+                type: 'STATUS_CHANGE',
+                payload: { siteName: 'Qwen', jobId, status: 'DONE', conversationUrl: finalUrl },
+              });
+            }
+          );
+
+          if (result === 'STREAMING') {
+            send({ type: 'STATUS_CHANGE', payload: { siteName: 'Qwen', jobId, status: 'STREAMING' } });
+          } else if (result === 'FAILED') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Qwen', jobId, status: 'FAILED', errorReason: '自愈重试未成功，请检查页面输入框状态' },
+            });
+          }
+        } catch (err) {
+          console.error('[QwenContent] Recovery error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Qwen', jobId, status: 'FAILED', errorReason: String(err) },
+          });
+        }
       }
     };
 
@@ -157,7 +201,7 @@ export default defineContentScript({
         sendResponse({ type: 'PONG', siteName: 'Qwen', ready: true });
         return false;
       }
-      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT' || msg.type === 'RECOVER_SITE') {
         sendResponse({ success: true, siteName: 'Qwen', received: true });
         handleIncomingMessage(msg);
         return false;

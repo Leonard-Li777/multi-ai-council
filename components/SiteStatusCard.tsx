@@ -111,12 +111,12 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
           >
             <ExternalLink className="w-3.5 h-3.5" />
           </button>
-          {isError && (
+          {onRetry && (
             <button
               type="button"
               onClick={onRetry}
-              title="重试该站点"
-              className="p-1 rounded text-rose-500 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950 transition-colors"
+              title="一键自愈：检测异常并自动继续下一动作"
+              className="p-1 rounded text-slate-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/60 transition-colors cursor-pointer"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
@@ -124,11 +124,31 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
         </div>
       </div>
 
-      {/* 异常原因提示（排除已单独高亮展示的未登录与验证码） */}
+      {/* 异常原因提示与自愈引导条 */}
       {run?.errorReason && status !== 'BLOCKED_LOGIN' && status !== 'BLOCKED_CAPTCHA' && (
-        <div className="text-[11px] text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 p-2 rounded-lg mb-2 flex items-center gap-1.5">
-          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-          <span>{run.errorReason}</span>
+        <div className="bg-rose-50 dark:bg-rose-950/70 border border-rose-200 dark:border-rose-900/80 p-2.5 rounded-lg mb-2 text-xs">
+          <div className="flex items-center gap-1.5 text-rose-700 dark:text-rose-300 mb-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span className="font-medium">{run.errorReason}</span>
+          </div>
+          <div className="flex items-center justify-end gap-1.5">
+            <button
+              type="button"
+              onClick={onFocusTab}
+              className="px-2 py-1 bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded text-[11px] font-medium flex items-center gap-1 cursor-pointer"
+            >
+              <ExternalLink className="w-3 h-3" />
+              前往处理
+            </button>
+            <button
+              type="button"
+              onClick={onRetry}
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[11px] font-medium flex items-center gap-1 shadow-2xs cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              已处理异常，自动继续
+            </button>
+          </div>
         </div>
       )}
 

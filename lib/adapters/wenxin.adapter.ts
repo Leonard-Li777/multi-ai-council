@@ -238,14 +238,118 @@ export class WenxinAdapter implements AISiteAdapter {
     );
   }
 
-  private findLatestAssistantMessageElement(): HTMLElement | null {
-    const msgs = Array.from(
+  public dismissDialogs(): boolean {
+    const dialogButtons = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="assistant"], div[class*="bot-message"], div[class*="markdown-body"], div.markdown'
+        'div[role="dialog"] button, div[class*="modal"] button, div[class*="dialog"] button'
       )
     );
-    if (msgs.length === 0) return null;
-    return msgs[msgs.length - 1] ?? null;
+    let dismissed = false;
+    for (const btn of dialogButtons) {
+      const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (
+        text.includes('确定') ||
+        text.includes('知道了') ||
+        text.includes('重试') ||
+        text.includes('关闭') ||
+        text.includes('ok') ||
+        text.includes('dismiss')
+      ) {
+        btn.click();
+        dismissed = true;
+      }
+    }
+    return dismissed;
+  }
+
+  public async autoRecoverAndContinue(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'> {
+    this.dismissDialogs();
+    await this.sleep(300);
+
+    const lastMsg = this.findLatestAssistantMessageElement();
+    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
+      const md = domToMarkdown(lastMsg);
+      const cleaned = (md && md.trim().length > 0) ? md : currentText;
+      onDone(cleaned);
+      return 'DONE';
+    }
+
+    if (this.findStopButton()) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    const input = this.findInputElement();
+    if (input) {
+      const inputVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (inputVal.trim().length > 0) {
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+          sendBtn.click();
+        } else {
+          const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+          input.focus();
+          input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+          input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        }
+        await this.sleep(400);
+        this.listenGeneration(onUpdate, onDone);
+        return 'STREAMING';
+      }
+    }
+
+    const sent = await this.sendPrompt(prompt);
+    if (sent) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    return 'FAILED';
+  }
+
+  private findLatestAssistantMessageElement(): HTMLElement | null {
+    // 1. 文心一言特定的机器人回答类（含 eb-markdown, robot-content, chat-item-robot, ans-text 等）
+    const selectors = [
+      'div[class*="robot-content"]',
+      'div[class*="robot_content"]',
+      'div[class*="robotContent"]',
+      'div[class*="eb-markdown"]',
+      'div[class*="md-view"]',
+      'div[class*="ans-text"]',
+      'div[class*="answer-text"]',
+      'div[class*="answer_text"]',
+      'div[class*="chat-item-robot"]',
+      'div[class*="robot-item"]',
+      'div[class*="ai-message"]',
+      'div[class*="bot-message"]',
+      'div[class*="assistant"]',
+      'div[class*="markdown-body"]',
+      'div[class*="markdown"]',
+      'div[class*="content_wrap"]',
+      'div[class*="content-wrap"]',
+    ];
+
+    const msgs = Array.from(document.querySelectorAll<HTMLElement>(selectors.join(', ')));
+    if (msgs.length > 0) {
+      return msgs[msgs.length - 1] ?? null;
+    }
+
+    // 2. 降级：寻找聊天区域内的非用户消息
+    const allBubbles = Array.from(document.querySelectorAll<HTMLElement>('main div[class*="content"], div[class*="chat"] div[class*="message"], div[class*="dialogue"] div[class*="item"]'));
+    const nonUserBubbles = allBubbles.filter(b => {
+      const cls = (b.className || '').toLowerCase();
+      return !cls.includes('user') && !cls.includes('self') && !cls.includes('human');
+    });
+    if (nonUserBubbles.length > 0) {
+      return nonUserBubbles[nonUserBubbles.length - 1] ?? null;
+    }
+
+    return null;
   }
 
   private sleep(ms: number): Promise<void> {

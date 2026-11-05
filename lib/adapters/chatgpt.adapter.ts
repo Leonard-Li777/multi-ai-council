@@ -227,6 +227,93 @@ export class ChatGPTAdapter implements AISiteAdapter {
 
   // --- 内部 DOM 元素查找工具 ---
 
+  public dismissDialogs(): boolean {
+    // 自动检测并关闭诸如 "Your account was switched"、"Stay logged out"、"Something went wrong" 等异常弹窗
+    const dialogButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[role="dialog"] button, div[role="alertdialog"] button, div[class*="modal"] button, div[data-state="open"] button'
+      )
+    );
+    let dismissed = false;
+    for (const btn of dialogButtons) {
+      const text = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (
+        text.includes('stay logged out') ||
+        text.includes('dismiss') ||
+        text.includes('ok') ||
+        text.includes('reload') ||
+        text.includes('try again') ||
+        text.includes('确定') ||
+        text.includes('知道了') ||
+        text.includes('重试') ||
+        text.includes('关闭') ||
+        btn.getAttribute('aria-label') === 'Close'
+      ) {
+        btn.click();
+        dismissed = true;
+      }
+    }
+    return dismissed;
+  }
+
+  /**
+   * 智能自愈与状态恢复
+   */
+  public async autoRecoverAndContinue(
+    prompt: string,
+    onUpdate: (snapshot: string, cleaned: string) => void,
+    onDone: (finalCleaned: string) => void
+  ): Promise<'DONE' | 'STREAMING' | 'SENT' | 'FAILED'> {
+    // 步骤 1：关闭账户切换或报错遮罩弹窗
+    this.dismissDialogs();
+    await this.sleep(300);
+
+    // 步骤 2：检查是否已经产出了回答
+    const lastMsg = this.findLatestAssistantMessageElement();
+    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
+      const md = domToMarkdown(lastMsg);
+      const cleaned = (md && md.trim().length > 0) ? md : currentText;
+      onDone(cleaned);
+      return 'DONE';
+    }
+
+    // 步骤 3：检查是否正在流式生成中
+    if (this.findStopButton()) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    // 步骤 4：检查输入框是否已经含有提示词内容
+    const input = this.findInputElement();
+    if (input) {
+      const inputVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (inputVal.trim().length > 0) {
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+          sendBtn.click();
+        } else {
+          const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+          input.focus();
+          input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+          input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        }
+        await this.sleep(400);
+        this.listenGeneration(onUpdate, onDone);
+        return 'STREAMING';
+      }
+    }
+
+    // 步骤 5：输入框为空，重新执行完整注入与提交
+    const sent = await this.sendPrompt(prompt);
+    if (sent) {
+      this.listenGeneration(onUpdate, onDone);
+      return 'STREAMING';
+    }
+
+    return 'FAILED';
+  }
+
   private findInputElement(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('#prompt-textarea') ||

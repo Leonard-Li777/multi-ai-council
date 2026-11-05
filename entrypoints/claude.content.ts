@@ -152,6 +152,50 @@ export default defineContentScript({
             },
           });
         }
+      } else if (msg.type === 'RECOVER_SITE' && msg.payload.siteName === 'Claude') {
+        const { jobId, prompt } = msg.payload;
+        currentJobId = jobId;
+        console.log(`[ClaudeContent] Executing auto-recovery for Job ${jobId}`);
+
+        try {
+          if (stopListening) stopListening();
+
+          const result = await claudeAdapter.autoRecoverAndContinue(
+            prompt,
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Claude', jobId, snapshot, cleaned, isFinished: false },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = claudeAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Claude', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true },
+              });
+              send({
+                type: 'STATUS_CHANGE',
+                payload: { siteName: 'Claude', jobId, status: 'DONE', conversationUrl: finalUrl },
+              });
+            }
+          );
+
+          if (result === 'STREAMING') {
+            send({ type: 'STATUS_CHANGE', payload: { siteName: 'Claude', jobId, status: 'STREAMING' } });
+          } else if (result === 'FAILED') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Claude', jobId, status: 'FAILED', errorReason: '自愈重试未成功，请检查页面输入框状态' },
+            });
+          }
+        } catch (err) {
+          console.error('[ClaudeContent] Recovery error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Claude', jobId, status: 'FAILED', errorReason: String(err) },
+          });
+        }
       }
     };
 
@@ -182,7 +226,7 @@ export default defineContentScript({
         sendResponse({ type: 'PONG', siteName: 'Claude', ready: true });
         return false;
       }
-      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT' || msg.type === 'RECOVER_SITE') {
         sendResponse({ success: true, siteName: 'Claude', received: true });
         handleIncomingMessage(msg);
         return false;

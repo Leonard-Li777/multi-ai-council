@@ -127,6 +127,50 @@ export default defineContentScript({
             },
           });
         }
+      } else if (msg.type === 'RECOVER_SITE' && msg.payload.siteName === 'Wenxin') {
+        const { jobId, prompt } = msg.payload;
+        currentJobId = jobId;
+        console.log(`[WenxinContent] Executing auto-recovery for Job ${jobId}`);
+
+        try {
+          if (stopListening) stopListening();
+
+          const result = await wenxinAdapter.autoRecoverAndContinue(
+            prompt,
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Wenxin', jobId, snapshot, cleaned, isFinished: false },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = wenxinAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: { siteName: 'Wenxin', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true },
+              });
+              send({
+                type: 'STATUS_CHANGE',
+                payload: { siteName: 'Wenxin', jobId, status: 'DONE', conversationUrl: finalUrl },
+              });
+            }
+          );
+
+          if (result === 'STREAMING') {
+            send({ type: 'STATUS_CHANGE', payload: { siteName: 'Wenxin', jobId, status: 'STREAMING' } });
+          } else if (result === 'FAILED') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: '自愈重试未成功，请检查页面输入框状态' },
+            });
+          }
+        } catch (err) {
+          console.error('[WenxinContent] Recovery error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: String(err) },
+          });
+        }
       }
     };
 
@@ -157,7 +201,7 @@ export default defineContentScript({
         sendResponse({ type: 'PONG', siteName: 'Wenxin', ready: true });
         return false;
       }
-      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+      if (msg.type === 'DISPATCH_PROMPT' || msg.type === 'DISPATCH_SYNTHESIS_PROMPT' || msg.type === 'RECOVER_SITE') {
         sendResponse({ success: true, siteName: 'Wenxin', received: true });
         handleIncomingMessage(msg);
         return false;

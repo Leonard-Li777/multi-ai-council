@@ -87,6 +87,14 @@ export type PortMessage =
         jobId: string;
         metaPrompt: string;
       };
+    }
+  | {
+      type: 'RECOVER_SITE';
+      payload: {
+        siteName: SupportedSite;
+        jobId: string;
+        prompt: string;
+      };
     };
 
 /**
