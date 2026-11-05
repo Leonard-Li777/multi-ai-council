@@ -64,18 +64,28 @@ export class GeminiAdapter implements AISiteAdapter {
   public async createNewChat(): Promise<void> {
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button[aria-label*="New chat"], button[aria-label*="新对话"], [data-test-id="new-chat-button"], div[class*="new-chat-button"], a[data-test-id="new-chat-button"]'
+        'button, a, div[role="button"], span[role="button"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
       const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
       if (isLogo) return false;
-      return true;
+      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+      return (
+        text.includes('new chat') ||
+        text.includes('新对话') ||
+        text.includes('新建对话') ||
+        aria.includes('new chat') ||
+        aria.includes('新对话') ||
+        aria.includes('新建对话') ||
+        el.getAttribute('data-test-id')?.includes('new-chat')
+      );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(500);
+      await this.sleep(600);
     }
   }
 
@@ -320,7 +330,9 @@ export class GeminiAdapter implements AISiteAdapter {
     );
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
-      const contentEl = last.querySelector<HTMLElement>('div.markdown, message-content, div[class*="response-container"]');
+      const contentEl = last.querySelector<HTMLElement>(
+        'message-content, div.markdown, div[class*="response-container"], div[class*="model-response-text"]'
+      );
       return contentEl || last;
     }
 

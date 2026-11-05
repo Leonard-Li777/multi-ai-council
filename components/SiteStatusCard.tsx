@@ -57,7 +57,10 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
   const status = run?.status || 'PENDING';
   const cfg = STATUS_CONFIG[status];
   const responseText = run?.cleanedResponse || run?.responseSnapshot || '';
-  const charCount = responseText.length;
+  // 纯文本简单安全展示，防止脚本注入并去除任何非法标记
+  const sanitizedPreview = DOMPurify.sanitize(responseText);
+  // 字数统计以净化后实际可见内容为准，杜绝未剥离内联标签导致显示虚高
+  const charCount = sanitizedPreview.length;
   const [copied, setCopied] = useState(false);
   const [internalExpanded, setInternalExpanded] = useState<boolean>(true);
 
@@ -81,9 +84,6 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
       console.warn('[SiteStatusCard] Copy failed:', err);
     }
   };
-
-  // 纯文本简单安全展示，防止脚本注入
-  const sanitizedPreview = DOMPurify.sanitize(responseText);
 
   const isError =
     status === 'BLOCKED_CAPTCHA' ||

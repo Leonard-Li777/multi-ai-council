@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import DOMPurify from 'dompurify';
 import type { ReviewJob, SupportedSite, ProviderRun } from '../../lib/types/review-job';
 import {
   getActiveJob,
@@ -316,13 +317,13 @@ export const App: React.FC = () => {
     setExpandedMap(nextMap);
   };
 
-  // 全站抓取总字数统计
+  // 全站抓取总字数统计（以净化后的可见文本字数为准）
   const totalCapturedChars = useMemo(() => {
     if (!activeJob) return 0;
     return selectedSites.reduce((acc, site) => {
       const run = activeJob.providerRuns[site];
       const text = run?.cleanedResponse || run?.responseSnapshot || '';
-      return acc + text.length;
+      return acc + (text ? DOMPurify.sanitize(text).length : 0);
     }, 0);
   }, [activeJob, selectedSites]);
 

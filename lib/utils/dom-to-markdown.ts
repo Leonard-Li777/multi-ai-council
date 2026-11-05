@@ -8,7 +8,7 @@ export function domToMarkdown(root: HTMLElement): string {
   // 克隆节点防止污染原页面
   const clone = root.cloneNode(true) as HTMLElement;
 
-  // 1. 移除不相干的控件元素（如复制按钮、点赞踩、折叠按钮等）
+  // 1. 移除不相干的控件与样式/脚本元素（彻底防止内联 CSS/脚本污染字数）
   const noiseSelectors = [
     'button',
     '.copy-button',
@@ -17,6 +17,21 @@ export function domToMarkdown(root: HTMLElement): string {
     '[role="button"]',
     '.ds-icon',
     '.feedback-actions',
+    'style',
+    'script',
+    'noscript',
+    'template',
+    'head',
+    'link',
+    'meta',
+    'iframe',
+    'audio',
+    'video',
+    'canvas',
+    '[data-testid*="feedback"]',
+    '[class*="feedback"]',
+    '[class*="citation"]',
+    '[class*="source"]',
   ];
   noiseSelectors.forEach((sel) => {
     clone.querySelectorAll(sel).forEach((el) => el.remove());
@@ -36,6 +51,11 @@ function walkNode(node: Node): string {
 
   const el = node as HTMLElement;
   const tag = el.tagName.toLowerCase();
+
+  // 严防样式表、脚本与隐藏元数据穿透为文本
+  if (['style', 'script', 'noscript', 'template', 'head', 'link', 'meta', 'svg', 'iframe'].includes(tag)) {
+    return '';
+  }
 
   // 代码块优先处理
   if (tag === 'pre') {

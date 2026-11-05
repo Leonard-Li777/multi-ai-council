@@ -68,21 +68,24 @@ export class WenxinAdapter implements AISiteAdapter {
     const newChatBtn = candidates.find((el) => {
       const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
       if (isLogo) return false;
-      const text = (el.innerText || el.textContent || '').trim();
-      const aria = (el.getAttribute('aria-label') || '').trim();
+      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
       return (
-        text === '新建对话' ||
-        text === '新建会话' ||
-        text === '新对话' ||
-        text === 'New chat' ||
+        text.includes('新建对话') ||
+        text.includes('新建会话') ||
+        text.includes('新对话') ||
+        text.includes('新会话') ||
+        text.includes('new chat') ||
         aria.includes('新建对话') ||
-        aria.includes('新建会话')
+        aria.includes('新建会话') ||
+        aria.includes('新对话') ||
+        aria.includes('new chat')
       );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(500);
+      await this.sleep(600);
     }
   }
 
@@ -168,6 +171,11 @@ export class WenxinAdapter implements AISiteAdapter {
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
+
+        // 主动滚屏保持元素挂载，防止文心一言虚拟滚动卸载上部段落
+        try {
+          lastMsgEl.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
+        } catch {}
 
         if (lastMsgEl === this.baselineLastElement) {
           const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
@@ -316,33 +324,32 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 文心一言特定的机器人回答类（含 eb-markdown, robot-content, chat-item-robot, ans-text 等）
-    const selectors = [
-      'div[class*="robot-content"]',
-      'div[class*="robot_content"]',
-      'div[class*="robotContent"]',
-      'div[class*="eb-markdown"]',
-      'div[class*="md-view"]',
-      'div[class*="ans-text"]',
-      'div[class*="answer-text"]',
-      'div[class*="answer_text"]',
+    // 1. 查找所有机器人回答轮次的最外层卡片容器（确保包含整个回答的所有段落与代码块）
+    const turnSelectors = [
       'div[class*="chat-item-robot"]',
       'div[class*="robot-item"]',
-      'div[class*="ai-message"]',
-      'div[class*="bot-message"]',
-      'div[class*="assistant"]',
-      'div[class*="markdown-body"]',
-      'div[class*="markdown"]',
-      'div[class*="content_wrap"]',
-      'div[class*="content-wrap"]',
+      'div[class*="robot_item"]',
+      'div[class*="ans-item"]',
+      'div[class*="answer-item"]',
+      'div[class*="dialogue-item"]:not([class*="user"])',
+      'div[class*="chat-message"]:not([class*="user"])',
     ];
 
-    const msgs = Array.from(document.querySelectorAll<HTMLElement>(selectors.join(', ')));
-    if (msgs.length > 0) {
-      return msgs[msgs.length - 1] ?? null;
+    const turns = Array.from(document.querySelectorAll<HTMLElement>(turnSelectors.join(', ')));
+    if (turns.length > 0) {
+      const lastTurn = turns[turns.length - 1]!;
+      // 检查该轮次内部是否有主内容区域；若有多个段落，直接返回整张卡片由 domToMarkdown 统筹解析
+      const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"]');
+      return contentEl || lastTurn;
     }
 
-    // 2. 降级：寻找聊天区域内的非用户消息
+    // 2. 降级：查询页面中所有的 eb-markdown 容器
+    const mdList = Array.from(document.querySelectorAll<HTMLElement>('div[class*="eb-markdown"], div[class*="robot-content"], div[class*="markdown-body"]'));
+    if (mdList.length > 0) {
+      return mdList[mdList.length - 1] ?? null;
+    }
+
+    // 3. 降级：寻找聊天区域内的非用户消息
     const allBubbles = Array.from(document.querySelectorAll<HTMLElement>('main div[class*="content"], div[class*="chat"] div[class*="message"], div[class*="dialogue"] div[class*="item"]'));
     const nonUserBubbles = allBubbles.filter(b => {
       const cls = (b.className || '').toLowerCase();

@@ -73,6 +73,7 @@ export default defineContentScript({
           // 2. 若明确为新会话，执行新建
           if (!isContinuation) {
             await chatGPTAdapter.createNewChat();
+            await new Promise((r) => setTimeout(r, 400));
           }
 
           // 3. 标记状态为 SENDING

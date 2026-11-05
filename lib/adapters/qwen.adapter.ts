@@ -74,18 +74,38 @@ export class QwenAdapter implements AISiteAdapter {
   public async createNewChat(): Promise<void> {
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button[class*="new-chat"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"]'
+        'button, a, div[role="button"], span[role="button"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
       const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
       if (isLogo) return false;
-      return true;
+      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+      const title = (el.getAttribute('title') || '').trim().toLowerCase();
+      return (
+        text === '新对话' ||
+        text === '新建对话' ||
+        text === '新会话' ||
+        text === '新建会话' ||
+        text === 'new chat' ||
+        text.includes('新对话') ||
+        text.includes('新建会话') ||
+        text.includes('新会话') ||
+        aria.includes('新对话') ||
+        aria.includes('新建对话') ||
+        aria.includes('新会话') ||
+        aria.includes('new chat') ||
+        title.includes('新对话') ||
+        title.includes('new chat') ||
+        el.getAttribute('data-testid')?.includes('new-chat') ||
+        (el instanceof HTMLAnchorElement && (el.getAttribute('href') === '/' || el.getAttribute('href') === '/c/new'))
+      );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(500);
+      await this.sleep(600);
     }
   }
 
@@ -118,8 +138,13 @@ export class QwenAdapter implements AISiteAdapter {
 
       if (trigger) {
         const currentText = (trigger.innerText || trigger.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-        if (currentText.includes(normalizedTarget) || (currentText.includes('3.8') && currentText.includes('max'))) {
-          console.log('[QwenAdapter] Already on target model:', currentText);
+        // 若当前已经包含 max 或 3.8 或目标型号，说明已经是所需模型，绝不重新点击展开下拉框扰乱焦点或打断用户手动选择
+        if (
+          currentText.includes(normalizedTarget) ||
+          currentText.includes('max') ||
+          currentText.includes('3.8')
+        ) {
+          console.log('[QwenAdapter] Already on target/Max model:', currentText);
           return true;
         }
 
@@ -166,9 +191,6 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   public async sendPrompt(prompt: string): Promise<boolean> {
-    // 1. 尝试先切换至指定 Qwen3.8-Max 模型
-    await this.switchModel('3.8-Max');
-
     this.recordBaseline();
 
     const input = this.findInputElement();
@@ -186,6 +208,15 @@ export class QwenAdapter implements AISiteAdapter {
       sendBtn.click();
       sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       await this.sleep(300);
+    }
+
+    // 尝试通过原生表单 requestSubmit() 提交
+    const form = input.closest('form');
+    if (form && !this.findStopButton()) {
+      try {
+        form.requestSubmit();
+        await this.sleep(200);
+      } catch {}
     }
 
     // 始终派发 Enter 保底
@@ -373,7 +404,7 @@ export class QwenAdapter implements AISiteAdapter {
 
   private findSendButton(): HTMLElement | null {
     const direct = document.querySelector<HTMLElement>(
-      'button[class*="send-button"], button[class*="sendBtn"], div[class*="sendBtn"], div[class*="send-btn"], button[aria-label*="发送"], div[role="button"][class*="send"], button[class*="send"]'
+      'button[type="submit"], button[class*="send-button"], button[class*="sendBtn"], div[class*="sendBtn"], div[class*="send-btn"], button[class*="submit"], div[class*="submit"], button[aria-label*="发送"], button[aria-label*="Send"], div[role="button"][class*="send"], button[class*="send"], button.ant-btn-primary'
     );
     if (direct) return direct;
 
@@ -384,10 +415,11 @@ export class QwenAdapter implements AISiteAdapter {
       const found = candidates.reverse().find(b => {
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         const cls = (b.className || '').toString().toLowerCase();
+        const type = (b.getAttribute('type') || '').toLowerCase();
         if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('audio') || cls.includes('upload')) {
           return false;
         }
-        return b.querySelector('svg') !== null || cls.includes('send') || cls.includes('submit');
+        return b.querySelector('svg') !== null || cls.includes('send') || cls.includes('submit') || type === 'submit';
       });
       if (found) return found;
       parent = parent.parentElement;

@@ -54,9 +54,10 @@ export default defineContentScript({
 
           if (!isContinuation) {
             await qwenAdapter.createNewChat();
+            await new Promise((r) => setTimeout(r, 400));
           }
 
-          // 确保模型切换为 Qwen3.8-Max
+          // 尝试模型切换（若已处于 Max 系列或用户已手动选定，内部自动跳过）
           await qwenAdapter.switchModel('3.8-Max');
 
           send({

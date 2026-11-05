@@ -54,6 +54,7 @@ export default defineContentScript({
 
           if (!isContinuation) {
             await geminiAdapter.createNewChat();
+            await new Promise((r) => setTimeout(r, 400));
           }
 
           send({

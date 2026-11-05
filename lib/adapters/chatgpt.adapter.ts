@@ -90,18 +90,30 @@ export class ChatGPTAdapter implements AISiteAdapter {
   public async createNewChat(): Promise<void> {
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button[data-testid="create-new-chat-button"], a[data-testid="new-chat-button"], button[aria-label*="New chat"], button[aria-label*="新聊天"], a[href="/"]'
+        'button, a, div[role="button"], span[role="button"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
       const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
       if (isLogo) return false;
-      return true;
+      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+      const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+      const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+      return (
+        testid.includes('new-chat') ||
+        text.includes('new chat') ||
+        text.includes('新聊天') ||
+        text.includes('新对话') ||
+        aria.includes('new chat') ||
+        aria.includes('新聊天') ||
+        aria.includes('新对话') ||
+        (el instanceof HTMLAnchorElement && el.getAttribute('href') === '/')
+      );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(500);
+      await this.sleep(600);
     }
   }
 
@@ -360,22 +372,37 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 优先按 article 或 role 查找最新的 assistant 回复
-    const turns = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '[data-message-author-role="assistant"], article[data-testid*="conversation-turn"]:has([data-message-author-role="assistant"]), [data-testid*="assistant"]'
-      )
+    // 1. 查找所有 assistant 消息容器（精准匹配 role="assistant"）
+    const assistantRoles = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-message-author-role="assistant"]')
     );
-    if (turns.length > 0) {
-      const lastTurn = turns[turns.length - 1]!;
-      const mdContainer = lastTurn.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || lastTurn;
-      if (mdContainer && (mdContainer.textContent || '').trim().length > 0) {
-        return mdContainer;
+    if (assistantRoles.length > 0) {
+      const last = assistantRoles[assistantRoles.length - 1]!;
+      const md = last.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || last;
+      if ((md.textContent || '').trim().length > 0) {
+        return md;
       }
     }
 
-    // 2. 降级：查询页面中所有的 .markdown 或 .prose 容器（ChatGPT 仅在 Assistant 回复中使用 .markdown）
-    const mdElements = Array.from(document.querySelectorAll<HTMLElement>('.markdown, .prose, div[class*="markdown"]'));
+    // 2. 查找包含 assistant 的 conversation-turn article，排除包含 user 角色的卡片
+    const articles = Array.from(
+      document.querySelectorAll<HTMLElement>('article[data-testid*="conversation-turn"]')
+    );
+    if (articles.length > 0) {
+      const nonUserArticles = articles.filter(
+        (art) => !art.querySelector('[data-message-author-role="user"]')
+      );
+      if (nonUserArticles.length > 0) {
+        const lastArt = nonUserArticles[nonUserArticles.length - 1]!;
+        const md = lastArt.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || lastArt;
+        if ((md.textContent || '').trim().length > 0) {
+          return md;
+        }
+      }
+    }
+
+    // 3. 降级：查询页面中所有的 .markdown 或 .prose 容器（ChatGPT 仅在 Assistant 回复中使用 .markdown）
+    const mdElements = Array.from(document.querySelectorAll<HTMLElement>('.markdown, .prose'));
     if (mdElements.length > 0) {
       const lastMd = mdElements[mdElements.length - 1]!;
       if ((lastMd.textContent || '').trim().length > 0) {
