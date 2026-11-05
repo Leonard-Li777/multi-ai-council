@@ -449,30 +449,42 @@ export default defineBackground(() => {
     }
   });
 
+  let startingJobId: string | null = null;
   async function handleStartJob(job: ReviewJob) {
+    if (startingJobId === job.id) {
+      console.log(`[Background] handleStartJob already running for job ${job.id}, skipping duplicate dispatch`);
+      return;
+    }
+    startingJobId = job.id;
     console.log('[Background] handleStartJob started for job:', job.id);
     await saveActiveJob(job);
     broadcastJobSync(job);
 
-    // 针对启用的所有站点逐一调度与创建/复用标签页（引入 1.5~3s 错峰抖动平滑激活）
-    let isFirst = true;
-    for (const siteName of job.aggregationPolicy.enabledSites) {
-      if (!isFirst) {
-        const jitterMs = 1500 + Math.floor(Math.random() * 1500);
-        await new Promise((r) => setTimeout(r, jitterMs));
-      }
-      isFirst = false;
+    try {
+      // 针对启用的所有站点逐一调度与创建/复用标签页（引入 1.2~2.2s 错峰抖动平滑激活）
+      let isFirst = true;
+      for (const siteName of job.aggregationPolicy.enabledSites) {
+        if (!isFirst) {
+          const jitterMs = 1200 + Math.floor(Math.random() * 1000);
+          await new Promise((r) => setTimeout(r, jitterMs));
+        }
+        isFirst = false;
 
-      try {
-        await ensureSiteTabAndDispatch(siteName, job);
-      } catch (err) {
-        console.error(`[Background] Failed to dispatch to site ${siteName}:`, err);
-        const updated = await updateProviderRun(job.id, siteName, {
-          status: 'FAILED',
-          errorReason: `初始化调度异常: ${String(err)}`,
-        });
-        broadcastJobSync(updated);
+        try {
+          await ensureSiteTabAndDispatch(siteName, job);
+        } catch (err) {
+          console.error(`[Background] Failed to dispatch to site ${siteName}:`, err);
+          const updated = await updateProviderRun(job.id, siteName, {
+            status: 'FAILED',
+            errorReason: `初始化调度异常: ${String(err)}`,
+          });
+          broadcastJobSync(updated);
+        }
       }
+    } finally {
+      setTimeout(() => {
+        if (startingJobId === job.id) startingJobId = null;
+      }, 5000);
     }
   }
 
@@ -517,21 +529,39 @@ export default defineBackground(() => {
     const targetUrl = getTargetDispatchUrl(siteName, job.isContinuation, existingRef || undefined);
     const baseUrl = SITE_BASE_URLS[siteName] || 'https://chat.deepseek.com/';
 
-    // 1. 查找是否已有打开的对应站点标签页
-    const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['https://chat.deepseek.com/*'];
-    let tabs: chrome.tabs.Tab[] = [];
-    try {
-      tabs = await chrome.tabs.query({ url: queryPatterns });
-    } catch (e) {
-      console.warn(`[Background] chrome.tabs.query failed for ${siteName}`, e);
-    }
-
+    // 1. 查找是否已有打开的对应站点标签页（先检查 siteTabs 缓存，再查 query）
     let targetTab: chrome.tabs.Tab | undefined;
     let isNavigating = false;
 
-    if (tabs.length > 0 && tabs[0]?.id !== undefined) {
-      targetTab = tabs[0];
-      siteTabs.set(siteName, tabs[0].id);
+    const cachedTabId = siteTabs.get(siteName);
+    if (cachedTabId) {
+      try {
+        const tab = await chrome.tabs.get(cachedTabId);
+        if (tab && !tab.discarded) {
+          targetTab = tab;
+        }
+      } catch {
+        siteTabs.delete(siteName);
+      }
+    }
+
+    if (!targetTab) {
+      const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['https://chat.deepseek.com/*'];
+      let tabs: chrome.tabs.Tab[] = [];
+      try {
+        tabs = await chrome.tabs.query({ url: queryPatterns });
+      } catch (e) {
+        console.warn(`[Background] chrome.tabs.query failed for ${siteName}`, e);
+      }
+
+      if (tabs.length > 0 && tabs[0]?.id !== undefined) {
+        targetTab = tabs[0];
+        siteTabs.set(siteName, tabs[0].id);
+      }
+    }
+
+    if (targetTab && targetTab.id !== undefined) {
+      siteTabs.set(siteName, targetTab.id);
 
       // 若需要延续特定远程会话且不在对应会话 URL，才尝试导航
       if (job.isContinuation && existingRef?.conversationUrl && targetTab.url && targetTab.url !== existingRef.conversationUrl) {

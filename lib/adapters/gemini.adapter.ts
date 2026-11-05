@@ -65,7 +65,7 @@ export class GeminiAdapter implements AISiteAdapter {
     const injected = await simulateTextInput(input, prompt);
     if (!injected) return false;
 
-    await this.sleep(400);
+    await this.sleep(350);
 
     const sendBtn = this.findSendButton();
     const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
@@ -75,21 +75,25 @@ export class GeminiAdapter implements AISiteAdapter {
       return true;
     }
 
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-      })
-    );
+    const eventInit: KeyboardEventInit = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
     return true;
   }
 
   public async validateSubmission(): Promise<boolean> {
     for (let i = 0; i < 5; i++) {
-      await this.sleep(500);
+      await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 

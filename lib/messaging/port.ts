@@ -120,11 +120,12 @@ export function setupPortWithHeartbeat(
     if (activePort) {
       try {
         activePort.postMessage(msg);
+        return;
       } catch (err) {
         console.warn(`[Port ${portName}] postMessage failed, trying fallback`, err);
       }
     }
-    // 2. 双保险：派发 runtime.sendMessage 确保即使 Port 断开也能唤醒 Service Worker
+    // 2. 双保险：仅当 Port 断开或未连接时，派发 runtime.sendMessage 兜底唤醒 Service Worker
     sendToBackground(msg);
   };
 

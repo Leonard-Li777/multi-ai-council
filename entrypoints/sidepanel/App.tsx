@@ -166,8 +166,9 @@ export const App: React.FC = () => {
 
     if (portSendRef.current) {
       portSendRef.current({ type: 'START_JOB', payload: { job: newJob } });
+    } else {
+      await sendToBackground({ type: 'START_JOB', payload: { job: newJob } });
     }
-    await sendToBackground({ type: 'START_JOB', payload: { job: newJob } });
   };
 
   // 清空任务与会话绑定

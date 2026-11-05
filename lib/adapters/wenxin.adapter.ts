@@ -69,31 +69,36 @@ export class WenxinAdapter implements AISiteAdapter {
     const injected = await simulateTextInput(input, prompt);
     if (!injected) return false;
 
-    await this.sleep(400);
+    await this.sleep(350);
 
     const sendBtn = this.findSendButton();
     const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
-    const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
+    const hasDisabledClass = sendBtn?.classList.contains('disabled') || sendBtn?.classList.contains('is-disabled');
+    const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled || hasDisabledClass;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
       return true;
     }
 
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-      })
-    );
+    const eventInit: KeyboardEventInit = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
     return true;
   }
 
   public async validateSubmission(): Promise<boolean> {
     for (let i = 0; i < 5; i++) {
-      await this.sleep(500);
+      await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 
@@ -157,9 +162,16 @@ export class WenxinAdapter implements AISiteAdapter {
 
   private findSendButton(): HTMLElement | null {
     return (
-      document.querySelector<HTMLElement>('button[class*="send"]') ||
-      document.querySelector<HTMLElement>('span[class*="send-btn"]') ||
+      document.querySelector<HTMLElement>('span[class*="sendBtn"]') ||
+      document.querySelector<HTMLElement>('div[class*="sendBtn"]') ||
+      document.querySelector<HTMLElement>('span[class*="send_btn"]') ||
+      document.querySelector<HTMLElement>('div[class*="send_btn"]') ||
       document.querySelector<HTMLElement>('div[class*="send-btn"]') ||
+      document.querySelector<HTMLElement>('span[class*="send-btn"]') ||
+      document.querySelector<HTMLElement>('button[class*="send"]') ||
+      document.querySelector<HTMLElement>('div[class*="enter-btn"]') ||
+      document.querySelector<HTMLElement>('span[class*="submit"]') ||
+      document.querySelector<HTMLElement>('div[class*="submit"]') ||
       document.querySelector<HTMLElement>('div[role="button"][aria-label*="发送"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送"]') ||
       document.querySelector<HTMLElement>('button:has(svg)')

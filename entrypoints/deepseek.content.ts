@@ -22,101 +22,114 @@ export default defineContentScript({
 
         console.log(`[DeepSeekContent] Received prompt for Job ${jobId}, continuation=${isContinuation}`);
 
-        // 1. 检查页面阻断状态
-        const blocker = await deepSeekAdapter.checkBlocker();
-        if (blocker === 'CAPTCHA') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'DeepSeek', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到人机验证，请人工通过' },
-          });
-          return;
-        }
-        if (blocker === 'NOT_LOGGED_IN') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'DeepSeek', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到未登录状态，请先登录' },
-          });
-          return;
-        }
-
-        // 2. 若明确为新会话，执行新建
-        if (!isContinuation) {
-          await deepSeekAdapter.createNewChat();
-        }
-
-        // 3. 标记状态为 SENDING
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'DeepSeek', jobId, status: 'SENDING' },
-        });
-
-        // 4. 模拟写入与提交
-        const sent = await deepSeekAdapter.sendPrompt(prompt);
-        if (!sent) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: '输入框注入或点击发送失败' },
-          });
-          return;
-        }
-
-        // 5. 校验提交状态
-        const validated = await deepSeekAdapter.validateSubmission();
-        if (!validated) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
-          });
-          return;
-        }
-
-        // 6. 标记为 STREAMING 并启动监听
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'DeepSeek', jobId, status: 'STREAMING' },
-        });
-
-        if (stopListening) {
-          stopListening();
-        }
-
-        stopListening = deepSeekAdapter.listenGeneration(
-          (snapshot, cleaned) => {
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'DeepSeek',
-                jobId,
-                snapshot,
-                cleaned,
-                isFinished: false,
-              },
-            });
-          },
-          (finalCleaned) => {
-            const finalUrl = deepSeekAdapter.getConversationUrl();
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'DeepSeek',
-                jobId,
-                snapshot: finalCleaned,
-                cleaned: finalCleaned,
-                isFinished: true,
-              },
-            });
-
+        try {
+          // 1. 检查页面阻断状态
+          const blocker = await deepSeekAdapter.checkBlocker();
+          if (blocker === 'CAPTCHA') {
             send({
               type: 'STATUS_CHANGE',
-              payload: {
-                siteName: 'DeepSeek',
-                jobId,
-                status: 'DONE',
-                conversationUrl: finalUrl,
-              },
+              payload: { siteName: 'DeepSeek', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到人机验证，请人工通过' },
             });
+            return;
           }
-        );
+          if (blocker === 'NOT_LOGGED_IN') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'DeepSeek', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到未登录状态，请先登录' },
+            });
+            return;
+          }
+
+          // 2. 若明确为新会话，执行新建
+          if (!isContinuation) {
+            await deepSeekAdapter.createNewChat();
+          }
+
+          // 3. 标记状态为 SENDING
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'DeepSeek', jobId, status: 'SENDING' },
+          });
+
+          // 4. 模拟写入与提交
+          const sent = await deepSeekAdapter.sendPrompt(prompt);
+          if (!sent) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: '输入框注入或点击发送失败' },
+            });
+            return;
+          }
+
+          // 5. 校验提交状态
+          const validated = await deepSeekAdapter.validateSubmission();
+          if (!validated) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'DeepSeek', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
+            });
+            return;
+          }
+
+          // 6. 标记为 STREAMING 并启动监听
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'DeepSeek', jobId, status: 'STREAMING' },
+          });
+
+          if (stopListening) {
+            stopListening();
+          }
+
+          stopListening = deepSeekAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'DeepSeek',
+                  jobId,
+                  snapshot,
+                  cleaned,
+                  isFinished: false,
+                },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = deepSeekAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'DeepSeek',
+                  jobId,
+                  snapshot: finalCleaned,
+                  cleaned: finalCleaned,
+                  isFinished: true,
+                },
+              });
+
+              send({
+                type: 'STATUS_CHANGE',
+                payload: {
+                  siteName: 'DeepSeek',
+                  jobId,
+                  status: 'DONE',
+                  conversationUrl: finalUrl,
+                },
+              });
+            }
+          );
+        } catch (err) {
+          console.error('[DeepSeekContent] Dispatch error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'DeepSeek',
+              jobId,
+              status: 'FAILED',
+              errorReason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
         const { jobId, metaPrompt } = msg.payload;
         currentJobId = jobId;

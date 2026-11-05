@@ -20,100 +20,113 @@ export default defineContentScript({
         const { jobId, prompt, isContinuation } = msg.payload;
         currentJobId = jobId;
 
-        const blocker = await geminiAdapter.checkBlocker();
-        if (blocker === 'CAPTCHA') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Gemini', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到验证码，请人工通过' },
-          });
-          return;
-        }
-        if (blocker === 'NOT_LOGGED_IN') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Gemini', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到 Google 未登录状态，请先登录' },
-          });
-          return;
-        }
-        if (blocker === 'RATE_LIMIT') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Gemini', jobId, status: 'RATE_LIMITED', errorReason: 'Gemini 请求频次限制' },
-          });
-          return;
-        }
-
-        if (!isContinuation) {
-          await geminiAdapter.createNewChat();
-        }
-
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'Gemini', jobId, status: 'SENDING' },
-        });
-
-        const sent = await geminiAdapter.sendPrompt(prompt);
-        if (!sent) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Gemini', jobId, status: 'FAILED', errorReason: 'Quill 输入框注入或点击发送失败' },
-          });
-          return;
-        }
-
-        const validated = await geminiAdapter.validateSubmission();
-        if (!validated) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Gemini', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
-          });
-          return;
-        }
-
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'Gemini', jobId, status: 'STREAMING' },
-        });
-
-        if (stopListening) stopListening();
-
-        stopListening = geminiAdapter.listenGeneration(
-          (snapshot, cleaned) => {
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'Gemini',
-                jobId,
-                snapshot,
-                cleaned,
-                isFinished: false,
-              },
-            });
-          },
-          (finalCleaned) => {
-            const finalUrl = geminiAdapter.getConversationUrl();
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'Gemini',
-                jobId,
-                snapshot: finalCleaned,
-                cleaned: finalCleaned,
-                isFinished: true,
-              },
-            });
-
+        try {
+          const blocker = await geminiAdapter.checkBlocker();
+          if (blocker === 'CAPTCHA') {
             send({
               type: 'STATUS_CHANGE',
-              payload: {
-                siteName: 'Gemini',
-                jobId,
-                status: 'DONE',
-                conversationUrl: finalUrl,
-              },
+              payload: { siteName: 'Gemini', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到验证码，请人工通过' },
             });
+            return;
           }
-        );
+          if (blocker === 'NOT_LOGGED_IN') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Gemini', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到 Google 未登录状态，请先登录' },
+            });
+            return;
+          }
+          if (blocker === 'RATE_LIMIT') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Gemini', jobId, status: 'RATE_LIMITED', errorReason: 'Gemini 请求频次限制' },
+            });
+            return;
+          }
+
+          if (!isContinuation) {
+            await geminiAdapter.createNewChat();
+          }
+
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Gemini', jobId, status: 'SENDING' },
+          });
+
+          const sent = await geminiAdapter.sendPrompt(prompt);
+          if (!sent) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Gemini', jobId, status: 'FAILED', errorReason: 'Quill 输入框注入或点击发送失败' },
+            });
+            return;
+          }
+
+          const validated = await geminiAdapter.validateSubmission();
+          if (!validated) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Gemini', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
+            });
+            return;
+          }
+
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Gemini', jobId, status: 'STREAMING' },
+          });
+
+          if (stopListening) stopListening();
+
+          stopListening = geminiAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'Gemini',
+                  jobId,
+                  snapshot,
+                  cleaned,
+                  isFinished: false,
+                },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = geminiAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'Gemini',
+                  jobId,
+                  snapshot: finalCleaned,
+                  cleaned: finalCleaned,
+                  isFinished: true,
+                },
+              });
+
+              send({
+                type: 'STATUS_CHANGE',
+                payload: {
+                  siteName: 'Gemini',
+                  jobId,
+                  status: 'DONE',
+                  conversationUrl: finalUrl,
+                },
+              });
+            }
+          );
+        } catch (err) {
+          console.error('[GeminiContent] Dispatch error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'Gemini',
+              jobId,
+              status: 'FAILED',
+              errorReason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       }
     };
 

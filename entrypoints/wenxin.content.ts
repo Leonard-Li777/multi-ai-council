@@ -20,100 +20,113 @@ export default defineContentScript({
         const { jobId, prompt, isContinuation } = msg.payload;
         currentJobId = jobId;
 
-        const blocker = await wenxinAdapter.checkBlocker();
-        if (blocker === 'CAPTCHA') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Wenxin', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到百度验证码，请人工通过' },
-          });
-          return;
-        }
-        if (blocker === 'NOT_LOGGED_IN') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Wenxin', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到百度未登录状态，请先登录' },
-          });
-          return;
-        }
-        if (blocker === 'RATE_LIMIT') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Wenxin', jobId, status: 'RATE_LIMITED', errorReason: '文心一言请求限制' },
-          });
-          return;
-        }
-
-        if (!isContinuation) {
-          await wenxinAdapter.createNewChat();
-        }
-
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'Wenxin', jobId, status: 'SENDING' },
-        });
-
-        const sent = await wenxinAdapter.sendPrompt(prompt);
-        if (!sent) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: '输入框注入或点击发送失败' },
-          });
-          return;
-        }
-
-        const validated = await wenxinAdapter.validateSubmission();
-        if (!validated) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
-          });
-          return;
-        }
-
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'Wenxin', jobId, status: 'STREAMING' },
-        });
-
-        if (stopListening) stopListening();
-
-        stopListening = wenxinAdapter.listenGeneration(
-          (snapshot, cleaned) => {
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'Wenxin',
-                jobId,
-                snapshot,
-                cleaned,
-                isFinished: false,
-              },
-            });
-          },
-          (finalCleaned) => {
-            const finalUrl = wenxinAdapter.getConversationUrl();
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'Wenxin',
-                jobId,
-                snapshot: finalCleaned,
-                cleaned: finalCleaned,
-                isFinished: true,
-              },
-            });
-
+        try {
+          const blocker = await wenxinAdapter.checkBlocker();
+          if (blocker === 'CAPTCHA') {
             send({
               type: 'STATUS_CHANGE',
-              payload: {
-                siteName: 'Wenxin',
-                jobId,
-                status: 'DONE',
-                conversationUrl: finalUrl,
-              },
+              payload: { siteName: 'Wenxin', jobId, status: 'BLOCKED_CAPTCHA', errorReason: '检测到百度验证码，请人工通过' },
             });
+            return;
           }
-        );
+          if (blocker === 'NOT_LOGGED_IN') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Wenxin', jobId, status: 'BLOCKED_LOGIN', errorReason: '检测到百度未登录状态，请先登录' },
+            });
+            return;
+          }
+          if (blocker === 'RATE_LIMIT') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Wenxin', jobId, status: 'RATE_LIMITED', errorReason: '文心一言请求限制' },
+            });
+            return;
+          }
+
+          if (!isContinuation) {
+            await wenxinAdapter.createNewChat();
+          }
+
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Wenxin', jobId, status: 'SENDING' },
+          });
+
+          const sent = await wenxinAdapter.sendPrompt(prompt);
+          if (!sent) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: '输入框注入或点击发送失败' },
+            });
+            return;
+          }
+
+          const validated = await wenxinAdapter.validateSubmission();
+          if (!validated) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'Wenxin', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
+            });
+            return;
+          }
+
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'Wenxin', jobId, status: 'STREAMING' },
+          });
+
+          if (stopListening) stopListening();
+
+          stopListening = wenxinAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'Wenxin',
+                  jobId,
+                  snapshot,
+                  cleaned,
+                  isFinished: false,
+                },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = wenxinAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'Wenxin',
+                  jobId,
+                  snapshot: finalCleaned,
+                  cleaned: finalCleaned,
+                  isFinished: true,
+                },
+              });
+
+              send({
+                type: 'STATUS_CHANGE',
+                payload: {
+                  siteName: 'Wenxin',
+                  jobId,
+                  status: 'DONE',
+                  conversationUrl: finalUrl,
+                },
+              });
+            }
+          );
+        } catch (err) {
+          console.error('[WenxinContent] Dispatch error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'Wenxin',
+              jobId,
+              status: 'FAILED',
+              errorReason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       }
     };
 

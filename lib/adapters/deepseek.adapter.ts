@@ -88,25 +88,30 @@ export class DeepSeekAdapter implements AISiteAdapter {
       return false;
     }
 
-    await this.sleep(400);
+    await this.sleep(300);
 
     // 2. 点击发送按钮或触发 Enter
     const sendBtn = this.findSendButton();
-    if (sendBtn && !sendBtn.hasAttribute('disabled')) {
+    const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
+    const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
+    if (sendBtn && !isDisabled) {
       sendBtn.click();
       return true;
     }
 
-    // 降级：模拟 Enter 键
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-      })
-    );
+    // 降级：模拟完整的 Enter 键盘事件
+    const eventInit: KeyboardEventInit = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    };
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
     return true;
   }
 
@@ -114,15 +119,16 @@ export class DeepSeekAdapter implements AISiteAdapter {
    * 验证消息是否成功提交
    */
   public async validateSubmission(): Promise<boolean> {
-    // 等待 1.5 秒检查输入框是否已被清空，或停止按钮是否出现
-    await this.sleep(1500);
-    const input = this.findInputElement();
-    const stopBtn = this.findStopButton();
+    for (let i = 0; i < 5; i++) {
+      await this.sleep(400);
+      const stopBtn = this.findStopButton();
+      if (stopBtn) return true;
 
-    if (stopBtn) return true;
-    if (input) {
-      const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
-      return val.trim().length === 0;
+      const input = this.findInputElement();
+      if (input) {
+        const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
+        if (val.trim().length === 0) return true;
+      }
     }
     return true;
   }

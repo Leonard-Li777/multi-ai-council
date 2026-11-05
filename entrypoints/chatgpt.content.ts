@@ -22,123 +22,136 @@ export default defineContentScript({
 
         console.log(`[ChatGPTContent] Received prompt for Job ${jobId}, continuation=${isContinuation}`);
 
-        // 1. 检查页面阻断状态
-        const blocker = await chatGPTAdapter.checkBlocker();
-        if (blocker === 'CAPTCHA') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: {
-              siteName: 'ChatGPT',
-              jobId,
-              status: 'BLOCKED_CAPTCHA',
-              errorReason: '检测到 Cloudflare 人机验证，请人工通过',
-            },
-          });
-          return;
-        }
-        if (blocker === 'NOT_LOGGED_IN') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: {
-              siteName: 'ChatGPT',
-              jobId,
-              status: 'BLOCKED_LOGIN',
-              errorReason: '检测到未登录状态，请先登录 ChatGPT',
-            },
-          });
-          return;
-        }
-        if (blocker === 'RATE_LIMIT') {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: {
-              siteName: 'ChatGPT',
-              jobId,
-              status: 'RATE_LIMITED',
-              errorReason: 'ChatGPT 当前遭遇请求频次限制',
-            },
-          });
-          return;
-        }
-
-        // 2. 若明确为新会话，执行新建
-        if (!isContinuation) {
-          await chatGPTAdapter.createNewChat();
-        }
-
-        // 3. 标记状态为 SENDING
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'ChatGPT', jobId, status: 'SENDING' },
-        });
-
-        // 4. 模拟写入与提交
-        const sent = await chatGPTAdapter.sendPrompt(prompt);
-        if (!sent) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'ChatGPT', jobId, status: 'FAILED', errorReason: 'ProseMirror 输入框注入或点击发送失败' },
-          });
-          return;
-        }
-
-        // 5. 校验提交状态
-        const validated = await chatGPTAdapter.validateSubmission();
-        if (!validated) {
-          send({
-            type: 'STATUS_CHANGE',
-            payload: { siteName: 'ChatGPT', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
-          });
-          return;
-        }
-
-        // 6. 标记为 STREAMING 并启动监听
-        send({
-          type: 'STATUS_CHANGE',
-          payload: { siteName: 'ChatGPT', jobId, status: 'STREAMING' },
-        });
-
-        if (stopListening) {
-          stopListening();
-        }
-
-        stopListening = chatGPTAdapter.listenGeneration(
-          (snapshot, cleaned) => {
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'ChatGPT',
-                jobId,
-                snapshot,
-                cleaned,
-                isFinished: false,
-              },
-            });
-          },
-          (finalCleaned) => {
-            const finalUrl = chatGPTAdapter.getConversationUrl();
-            send({
-              type: 'STREAM_UPDATE',
-              payload: {
-                siteName: 'ChatGPT',
-                jobId,
-                snapshot: finalCleaned,
-                cleaned: finalCleaned,
-                isFinished: true,
-              },
-            });
-
+        try {
+          // 1. 检查页面阻断状态
+          const blocker = await chatGPTAdapter.checkBlocker();
+          if (blocker === 'CAPTCHA') {
             send({
               type: 'STATUS_CHANGE',
               payload: {
                 siteName: 'ChatGPT',
                 jobId,
-                status: 'DONE',
-                conversationUrl: finalUrl,
+                status: 'BLOCKED_CAPTCHA',
+                errorReason: '检测到 Cloudflare 人机验证，请人工通过',
               },
             });
+            return;
           }
-        );
+          if (blocker === 'NOT_LOGGED_IN') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: {
+                siteName: 'ChatGPT',
+                jobId,
+                status: 'BLOCKED_LOGIN',
+                errorReason: '检测到未登录状态，请先登录 ChatGPT',
+              },
+            });
+            return;
+          }
+          if (blocker === 'RATE_LIMIT') {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: {
+                siteName: 'ChatGPT',
+                jobId,
+                status: 'RATE_LIMITED',
+                errorReason: 'ChatGPT 当前遭遇请求频次限制',
+              },
+            });
+            return;
+          }
+
+          // 2. 若明确为新会话，执行新建
+          if (!isContinuation) {
+            await chatGPTAdapter.createNewChat();
+          }
+
+          // 3. 标记状态为 SENDING
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'ChatGPT', jobId, status: 'SENDING' },
+          });
+
+          // 4. 模拟写入与提交
+          const sent = await chatGPTAdapter.sendPrompt(prompt);
+          if (!sent) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'ChatGPT', jobId, status: 'FAILED', errorReason: 'ProseMirror 输入框注入或点击发送失败' },
+            });
+            return;
+          }
+
+          // 5. 校验提交状态
+          const validated = await chatGPTAdapter.validateSubmission();
+          if (!validated) {
+            send({
+              type: 'STATUS_CHANGE',
+              payload: { siteName: 'ChatGPT', jobId, status: 'FAILED', errorReason: '提交后会话未响应' },
+            });
+            return;
+          }
+
+          // 6. 标记为 STREAMING 并启动监听
+          send({
+            type: 'STATUS_CHANGE',
+            payload: { siteName: 'ChatGPT', jobId, status: 'STREAMING' },
+          });
+
+          if (stopListening) {
+            stopListening();
+          }
+
+          stopListening = chatGPTAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'ChatGPT',
+                  jobId,
+                  snapshot,
+                  cleaned,
+                  isFinished: false,
+                },
+              });
+            },
+            (finalCleaned) => {
+              const finalUrl = chatGPTAdapter.getConversationUrl();
+              send({
+                type: 'STREAM_UPDATE',
+                payload: {
+                  siteName: 'ChatGPT',
+                  jobId,
+                  snapshot: finalCleaned,
+                  cleaned: finalCleaned,
+                  isFinished: true,
+                },
+              });
+
+              send({
+                type: 'STATUS_CHANGE',
+                payload: {
+                  siteName: 'ChatGPT',
+                  jobId,
+                  status: 'DONE',
+                  conversationUrl: finalUrl,
+                },
+              });
+            }
+          );
+        } catch (err) {
+          console.error('[ChatGPTContent] Dispatch error:', err);
+          send({
+            type: 'STATUS_CHANGE',
+            payload: {
+              siteName: 'ChatGPT',
+              jobId,
+              status: 'FAILED',
+              errorReason: err instanceof Error ? err.message : String(err),
+            },
+          });
+        }
       }
     };
 
