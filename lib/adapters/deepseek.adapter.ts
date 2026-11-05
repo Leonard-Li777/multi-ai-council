@@ -90,28 +90,32 @@ export class DeepSeekAdapter implements AISiteAdapter {
 
     await this.sleep(300);
 
-    // 2. 点击发送按钮或触发 Enter
+    // 2. 点击发送按钮
     const sendBtn = this.findSendButton();
     const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    // 降级：模拟完整的 Enter 键盘事件
-    const eventInit: KeyboardEventInit = {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-    };
-    input.focus();
-    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    // 3. 检查输入框是否已被清空，若未清空则补发完整的 Enter 键盘事件
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
@@ -129,6 +133,15 @@ export class DeepSeekAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    // 补救：若 2 秒后仍未触发生成，尝试补发一次 Enter
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -152,8 +165,9 @@ export class DeepSeekAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -189,12 +203,25 @@ export class DeepSeekAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('div[role="button"][aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('div[class*="send-button"]') ||
-      document.querySelector<HTMLElement>('div[role="button"]:has(svg)')
+    // 1. 精确语义选择器
+    const direct = document.querySelector<HTMLElement>(
+      'div[role="button"][aria-label*="发送"], button[aria-label*="发送"], div[role="button"][aria-label*="Send"], button[aria-label*="Send"], div[class*="send-button"], button[class*="send"]'
     );
+    if (direct) return direct;
+
+    // 2. 限制在输入容器内查找 svg 按钮，严禁全局 div:has(svg)
+    const input = this.findInputElement();
+    const container = input ? (input.closest('form, div[class*="input"], div[class*="chat-box"], div[class*="bottom"], main') as HTMLElement | null) : null;
+    if (container) {
+      const candidates = Array.from(container.querySelectorAll<HTMLElement>('div[role="button"], button'));
+      const sendCandidate = candidates.reverse().find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('think') || aria.includes('search')) return false;
+        return b.querySelector('svg') !== null;
+      });
+      if (sendCandidate) return sendCandidate;
+    }
+    return null;
   }
 
   private findStopButton(): HTMLElement | null {

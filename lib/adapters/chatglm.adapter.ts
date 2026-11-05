@@ -76,24 +76,31 @@ export class ChatGLMAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',
         keyCode: 13,
         which: 13,
         bubbles: true,
-      })
-    );
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
   public async validateSubmission(): Promise<boolean> {
     for (let i = 0; i < 5; i++) {
-      await this.sleep(500);
+      await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 
@@ -102,6 +109,15 @@ export class ChatGLMAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -121,8 +137,9 @@ export class ChatGLMAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -156,12 +173,23 @@ export class ChatGLMAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('button[class*="send"]') ||
-      document.querySelector<HTMLElement>('div[class*="enter"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('button:has(svg)')
+    const direct = document.querySelector<HTMLElement>(
+      'button[class*="send"], div[class*="enter"], button[aria-label*="发送"], div[role="button"][class*="send"]'
     );
+    if (direct) return direct;
+
+    const input = this.findInputElement();
+    const container = input ? (input.closest('form, div[class*="input"], div[class*="chat-input"], div[class*="bottom"], main') as HTMLElement | null) : null;
+    if (container) {
+      const candidates = Array.from(container.querySelectorAll<HTMLElement>('div[role="button"], button'));
+      const candidate = candidates.reverse().find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('audio')) return false;
+        return b.querySelector('svg') !== null;
+      });
+      if (candidate) return candidate;
+    }
+    return null;
   }
 
   private findStopButton(): HTMLElement | null {

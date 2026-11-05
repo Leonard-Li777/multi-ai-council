@@ -112,19 +112,26 @@ export class ClaudeAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    // 3. 降级方案：针对输入框派发 Enter 键
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
+    // 3. 检查输入框是否已被清空，若未清空则补发完整的 Enter 键盘事件
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',
         keyCode: 13,
         which: 13,
         bubbles: true,
-      })
-    );
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
@@ -133,7 +140,7 @@ export class ClaudeAdapter implements AISiteAdapter {
    */
   public async validateSubmission(): Promise<boolean> {
     for (let i = 0; i < 5; i++) {
-      await this.sleep(500);
+      await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 
@@ -142,6 +149,15 @@ export class ClaudeAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -164,8 +180,9 @@ export class ClaudeAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -216,9 +233,9 @@ export class ClaudeAdapter implements AISiteAdapter {
     return (
       document.querySelector<HTMLElement>('button[aria-label*="Stop Response"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Stop responding"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Stop"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="停止响应"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止生成"]')
+      document.querySelector<HTMLElement>('button[aria-label*="停止生成"]') ||
+      document.querySelector<HTMLElement>('button[data-testid*="stop"]')
     );
   }
 

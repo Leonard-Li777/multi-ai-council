@@ -72,22 +72,25 @@ export class GeminiAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    const eventInit: KeyboardEventInit = {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-    };
-    input.focus();
-    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-    input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
@@ -102,6 +105,16 @@ export class GeminiAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    // 补救：若 2 秒后仍未触发生成，尝试补发一次 Enter
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -121,8 +134,9 @@ export class GeminiAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -156,15 +170,25 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('button[aria-label*="Send message"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送消息"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Send"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('button.send-button') ||
-      document.querySelector<HTMLElement>('button[data-test-id="send-button"]') ||
-      document.querySelector<HTMLElement>('button:has(svg)')
+    // 1. 精确语义选择器
+    const direct = document.querySelector<HTMLElement>(
+      'button[aria-label*="Send message"], button[aria-label*="发送消息"], button[aria-label*="Send"], button[aria-label*="发送"], button.send-button, button[data-test-id="send-button"]'
     );
+    if (direct) return direct;
+
+    // 2. 限制在输入容器内查找 svg 按钮，严禁全局 button:has(svg)
+    const input = this.findInputElement();
+    const container = input ? (input.closest('rich-textarea, div[class*="input-area"], div[class*="text-input"], form') as HTMLElement | null) : null;
+    if (container) {
+      const candidates = Array.from(container.querySelectorAll<HTMLElement>('button'));
+      const candidate = candidates.reverse().find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('mic') || aria.includes('upload') || aria.includes('voice') || aria.includes('file')) return false;
+        return b.querySelector('svg') !== null || b.classList.contains('send-button');
+      });
+      if (candidate) return candidate;
+    }
+    return null;
   }
 
   private findStopButton(): HTMLElement | null {

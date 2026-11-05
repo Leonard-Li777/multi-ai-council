@@ -77,22 +77,25 @@ export class WenxinAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled || hasDisabledClass;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    const eventInit: KeyboardEventInit = {
-      key: 'Enter',
-      code: 'Enter',
-      keyCode: 13,
-      which: 13,
-      bubbles: true,
-      cancelable: true,
-      composed: true,
-    };
-    input.focus();
-    input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-    input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-    input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
@@ -107,6 +110,16 @@ export class WenxinAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    // 补救：若 2 秒后仍未触发生成，尝试补发一次 Enter
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -126,8 +139,9 @@ export class WenxinAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -161,21 +175,23 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('span[class*="sendBtn"]') ||
-      document.querySelector<HTMLElement>('div[class*="sendBtn"]') ||
-      document.querySelector<HTMLElement>('span[class*="send_btn"]') ||
-      document.querySelector<HTMLElement>('div[class*="send_btn"]') ||
-      document.querySelector<HTMLElement>('div[class*="send-btn"]') ||
-      document.querySelector<HTMLElement>('span[class*="send-btn"]') ||
-      document.querySelector<HTMLElement>('button[class*="send"]') ||
-      document.querySelector<HTMLElement>('div[class*="enter-btn"]') ||
-      document.querySelector<HTMLElement>('span[class*="submit"]') ||
-      document.querySelector<HTMLElement>('div[class*="submit"]') ||
-      document.querySelector<HTMLElement>('div[role="button"][aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送"]') ||
-      document.querySelector<HTMLElement>('button:has(svg)')
+    const direct = document.querySelector<HTMLElement>(
+      'span[class*="sendBtn"], div[class*="sendBtn"], span[class*="send_btn"], div[class*="send_btn"], div[class*="send-btn"], span[class*="send-btn"], button[class*="send"], div[class*="enter-btn"], span[class*="submit"], div[class*="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"]'
     );
+    if (direct) return direct;
+
+    const input = this.findInputElement();
+    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="footer"], div[class*="bottom"]') as HTMLElement | null) : null;
+    if (container) {
+      const candidates = Array.from(container.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button'));
+      const candidate = candidates.reverse().find(b => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (aria.includes('file') || aria.includes('upload') || aria.includes('plugin')) return false;
+        return b.querySelector('svg') !== null;
+      });
+      if (candidate) return candidate;
+    }
+    return null;
   }
 
   private findStopButton(): HTMLElement | null {

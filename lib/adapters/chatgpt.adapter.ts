@@ -113,19 +113,26 @@ export class ChatGPTAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      return true;
+      await this.sleep(200);
     }
 
-    // 3. 降级方案：针对 ProseMirror 容器触发 Enter 键盘事件
-    input.dispatchEvent(
-      new KeyboardEvent('keydown', {
+    // 3. 检查输入框是否已被清空，若未清空则补发完整的 Enter 键盘事件
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (currentVal.trim().length > 0) {
+      const eventInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',
         keyCode: 13,
         which: 13,
         bubbles: true,
-      })
-    );
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    }
     return true;
   }
 
@@ -135,7 +142,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
   public async validateSubmission(): Promise<boolean> {
     // 轮询检查最多 2.5 秒，确认停止按钮出现或输入框被清空
     for (let i = 0; i < 5; i++) {
-      await this.sleep(500);
+      await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 
@@ -144,6 +151,15 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
+    }
+    const input = this.findInputElement();
+    if (input) {
+      input.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(200);
     }
     return true;
   }
@@ -166,8 +182,9 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
         const md = domToMarkdown(lastMsgEl);
-        this.currentSnapshot = md;
-        return md;
+        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        this.currentSnapshot = result;
+        return result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -218,31 +235,39 @@ export class ChatGPTAdapter implements AISiteAdapter {
   private findStopButton(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('button[data-testid="stop-button"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Stop streaming"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Stop generating"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止生成"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Stop"]')
+      document.querySelector<HTMLElement>('button[aria-label="Stop streaming"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="Stop generating"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="停止生成"]') ||
+      document.querySelector<HTMLElement>('button[aria-label="停止响应"]') ||
+      document.querySelector<HTMLElement>('button[data-testid*="stop"]')
     );
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
+    // 1. 优先按 article 或 role 查找最新的 assistant 回复
     const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[data-message-author-role="assistant"], div[class*="agent-turn"]'
+        '[data-message-author-role="assistant"], article[data-testid*="conversation-turn"]:has([data-message-author-role="assistant"]), [data-testid*="assistant"]'
       )
     );
-    if (turns.length === 0) {
-      // 降级：查询包含 markdown 类的最后一个大容器
-      const mdElements = Array.from(document.querySelectorAll<HTMLElement>('.markdown, .prose'));
-      if (mdElements.length === 0) return null;
-      return mdElements[mdElements.length - 1] ?? null;
+    if (turns.length > 0) {
+      const lastTurn = turns[turns.length - 1]!;
+      const mdContainer = lastTurn.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || lastTurn;
+      if (mdContainer && (mdContainer.textContent || '').trim().length > 0) {
+        return mdContainer;
+      }
     }
 
-    const lastTurn = turns[turns.length - 1];
-    if (!lastTurn) return null;
-    const mdContainer = lastTurn.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || lastTurn;
-    return mdContainer;
+    // 2. 降级：查询页面中所有的 .markdown 或 .prose 容器（ChatGPT 仅在 Assistant 回复中使用 .markdown）
+    const mdElements = Array.from(document.querySelectorAll<HTMLElement>('.markdown, .prose, div[class*="markdown"]'));
+    if (mdElements.length > 0) {
+      const lastMd = mdElements[mdElements.length - 1]!;
+      if ((lastMd.textContent || '').trim().length > 0) {
+        return lastMd;
+      }
+    }
+
+    return null;
   }
 
   private sleep(ms: number): Promise<void> {
