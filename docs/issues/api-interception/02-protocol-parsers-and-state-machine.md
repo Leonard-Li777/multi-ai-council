@@ -1,6 +1,6 @@
 # Ticket 02: 协议解析器矩阵与因果双轨状态机
 
-- **状态**: ready-for-agent
+- **状态**: completed
 - **类型**: AFK
 - **环级归属**: 第 4 环 (L4 Context & History)
 - **父级目标**: [API 旁路拦截流式应答与轻量双轨架构技术规格说明书](../../specs/api-interception-spec.md)
@@ -24,8 +24,8 @@
 
 ## 验收准则 (Acceptance criteria)
 
-- [ ] **AC3 (SSE Line Buffer 零丢包)**：单元测试验证跨 chunk 随机切断的 multi-line `data:` SSE 流，`IncrementalSSEParser` 100% 正确复原事件，0 抛出 JSON 语法错误。
-- [ ] **AC4 (DeepSeek 思考与正文管道分离)**：DeepSeek R1 模式下，思考内容作为 reasoning 专属心跳通知，正文为独立流，Side Panel 正确分层呈现，无超时误报。
-- [ ] **AC5 (网络/DOM 独占与平滑降级)**：网络拦截正常时 DOM 监听器 0 消耗休眠；模拟网络流未命中时，系统在 15 秒超时后激活 DOM 兜底，任务正常完成。
-- [ ] **AC6 (用户主动 Stop 状态标记)**：模拟宿主 cancel 流时，状态机立即在 100ms 内记录 `status: 'PARTIAL'` 并释放锁，严禁混入 `DONE` 状态。
-- [ ] **AC7 (后台杂流 0 覆盖与 UNKNOWN 隔离)**：主生成期间并发收到 `/gen_title` 或 `UNKNOWN` 后台请求时，主会话缓冲区 0 污染、0 覆盖，UNKNOWN 流仅记录日志不汇总。
+- [x] **AC3 (SSE Line Buffer 零丢包)**：单元测试验证跨 chunk 随机切断的 multi-line `data:` SSE 流，`IncrementalSSEParser` 100% 正确复原事件，0 抛出 JSON 语法错误。
+- [x] **AC4 (DeepSeek 思考与正文管道分离)**：DeepSeek R1 模式下，思考内容作为 reasoning 专属心跳通知，正文为独立流，Side Panel 正确分层呈现，无超时误报。
+- [x] **AC5 (网络/DOM 独占与平滑降级)**：网络拦截正常时 DOM 监听器 0 消耗休眠；模拟网络流未命中时，系统在 15 秒超时后激活 DOM 兜底，任务正常完成。
+- [x] **AC6 (用户主动 Stop 状态标记)**：模拟宿主 cancel 流时，状态机立即在 100ms 内记录 `status: 'PARTIAL'` 并释放锁，严禁混入 `DONE` 状态。
+- [x] **AC7 (后台杂流 0 覆盖与 UNKNOWN 隔离)**：主生成期间并发收到 `/gen_title` 或 `UNKNOWN` 后台请求时，主会话缓冲区 0 污染、0 覆盖，UNKNOWN 流仅记录日志不汇总。
