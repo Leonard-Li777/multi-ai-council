@@ -18,3 +18,4 @@
 ## 2. 深度规格说明书挂载 (L3 Specs)
 
 - [Multi-AI Council 深度技术规格书](../../specs/multi-ai-council-spec.md)
+- [API 旁路拦截流式应答与轻量双轨架构规格书](../../specs/api-interception-spec.md)
