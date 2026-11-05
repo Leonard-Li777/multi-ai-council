@@ -4,9 +4,9 @@ export const SITE_BASE_URLS: Record<SupportedSite, string> = {
   DeepSeek: 'https://chat.deepseek.com/',
   ChatGPT: 'https://chatgpt.com/',
   Claude: 'https://claude.ai/',
-  Gemini: 'https://gemini.google.com/',
+  Gemini: 'https://gemini.google.com/app',
   Qwen: 'https://chat.qwen.ai/',
-  Wenxin: 'https://wenxin.baidu.com/',
+  Wenxin: 'https://yiyan.baidu.com/',
   ChatGLM: 'https://chatglm.cn/',
 };
 

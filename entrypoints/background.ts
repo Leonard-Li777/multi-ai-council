@@ -28,7 +28,7 @@ const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
   Claude: ['https://claude.ai/*'],
   Gemini: ['https://gemini.google.com/*'],
   Qwen: ['https://chat.qwen.ai/*'],
-  Wenxin: ['https://wenxin.baidu.com/*'],
+  Wenxin: ['https://yiyan.baidu.com/*', 'https://wenxin.baidu.com/*'],
   ChatGLM: ['https://chatglm.cn/*'],
 };
 
@@ -461,26 +461,29 @@ export default defineBackground(() => {
     broadcastJobSync(job);
 
     try {
-      // 针对启用的所有站点逐一调度与创建/复用标签页（引入 1.2~2.2s 错峰抖动平滑激活）
-      let isFirst = true;
-      for (const siteName of job.aggregationPolicy.enabledSites) {
-        if (!isFirst) {
-          const jitterMs = 1200 + Math.floor(Math.random() * 1000);
-          await new Promise((r) => setTimeout(r, jitterMs));
+      // 针对启用的所有站点并发错峰调度（单站独立超时保护，绝不让个别站点卡死其余站点）
+      const dispatchPromises = job.aggregationPolicy.enabledSites.map(async (siteName, index) => {
+        if (index > 0) {
+          await new Promise((r) => setTimeout(r, index * 350));
         }
-        isFirst = false;
 
         try {
-          await ensureSiteTabAndDispatch(siteName, job);
+          // 单站调度增加 10 秒超时隔离保护
+          await Promise.race([
+            ensureSiteTabAndDispatch(siteName, job),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('标签页初始化准备超时(10s)')), 10000)),
+          ]);
         } catch (err) {
           console.error(`[Background] Failed to dispatch to site ${siteName}:`, err);
           const updated = await updateProviderRun(job.id, siteName, {
-            status: 'FAILED',
-            errorReason: `初始化调度异常: ${String(err)}`,
+            status: 'WAITING_READY',
+            errorReason: `标签页加载中或超时: ${String(err)}`,
           });
           broadcastJobSync(updated);
         }
-      }
+      });
+
+      await Promise.allSettled(dispatchPromises);
     } finally {
       setTimeout(() => {
         if (startingJobId === job.id) startingJobId = null;
@@ -572,6 +575,25 @@ export default defineBackground(() => {
         } catch (e) {
           isNavigating = false;
           console.warn(`[Background] Navigation to conversationUrl skipped/rejected:`, e);
+        }
+      } else if (!job.isContinuation && targetTab.url) {
+        // 若明确为新会话，且复用的标签页正停留在历史会话详情页，主动导航回根路径开启全新空白对话
+        const isHistoricalChatUrl =
+          (siteName === 'DeepSeek' && targetTab.url.includes('/a/chat/s/')) ||
+          (siteName === 'ChatGPT' && targetTab.url.includes('/c/')) ||
+          (siteName === 'Claude' && targetTab.url.includes('/chat/')) ||
+          (siteName === 'Qwen' && targetTab.url.includes('/c/'));
+
+        if (isHistoricalChatUrl) {
+          try {
+            console.log(`[Background] Resetting ${siteName} tab ${targetTab.id} to new chat root: ${baseUrl}`);
+            isNavigating = true;
+            contentPorts.delete(siteName);
+            await chrome.tabs.update(targetTab.id, { url: baseUrl });
+          } catch (e) {
+            isNavigating = false;
+            console.warn(`[Background] Navigation to baseUrl skipped/rejected:`, e);
+          }
         }
       }
     } else {

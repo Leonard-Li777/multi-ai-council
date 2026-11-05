@@ -14,6 +14,14 @@ export class ChatGPTAdapter implements AISiteAdapter {
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private baselineLastElement: HTMLElement | null = null;
+  private baselineLastContent = '';
+
+  public recordBaseline(): void {
+    const el = this.findLatestAssistantMessageElement();
+    this.baselineLastElement = el;
+    this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+  }
 
   /**
    * 检查页面是否就绪（ProseMirror 输入框是否加载）
@@ -91,6 +99,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 注入提示词并点击发送（攻坚 ProseMirror 受控组件与剪贴板模拟）
    */
   public async sendPrompt(prompt: string): Promise<boolean> {
+    this.recordBaseline();
+
     const input = this.findInputElement();
     if (!input) {
       console.error('[ChatGPTAdapter] Input element not found');
@@ -181,6 +191,14 @@ export class ChatGPTAdapter implements AISiteAdapter {
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
+
+        if (lastMsgEl === this.baselineLastElement) {
+          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+          if (currentText === this.baselineLastContent) {
+            return '';
+          }
+        }
+
         const md = domToMarkdown(lastMsgEl);
         const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         this.currentSnapshot = result;

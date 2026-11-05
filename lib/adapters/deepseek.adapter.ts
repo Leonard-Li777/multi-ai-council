@@ -14,6 +14,14 @@ export class DeepSeekAdapter implements AISiteAdapter {
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private baselineLastElement: HTMLElement | null = null;
+  private baselineLastContent = '';
+
+  public recordBaseline(): void {
+    const el = this.findLatestAssistantMessageElement();
+    this.baselineLastElement = el;
+    this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+  }
 
   /**
    * 检查页面是否就绪
@@ -55,12 +63,32 @@ export class DeepSeekAdapter implements AISiteAdapter {
    * 开启新会话
    */
   public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'div[role="button"][class*="new"], a[href="/"], div[class*="new-chat"]'
-    );
-    if (newChatBtn && window.location.pathname !== '/') {
+    // 1. 寻找页面上的新会话入口（支持中文/英文/属性）
+    const allCandidates = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], a, button'));
+    const newChatBtn = allCandidates.find((el) => {
+      const text = (el.innerText || el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      return (
+        text === '开启新对话' ||
+        text === '新对话' ||
+        text === 'New chat' ||
+        aria.includes('新对话') ||
+        aria.includes('新聊天') ||
+        aria.includes('New chat') ||
+        el.getAttribute('href') === '/'
+      );
+    });
+
+    if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      return;
+    }
+
+    // 2. 降级：若在历史会话子路径则导航至根路径
+    if (window.location.pathname !== '/' && window.location.pathname.length > 1) {
+      window.location.href = 'https://chat.deepseek.com/';
+      await this.sleep(1000);
     }
   }
 
@@ -75,6 +103,9 @@ export class DeepSeekAdapter implements AISiteAdapter {
    * 注入提示词并点击发送
    */
   public async sendPrompt(prompt: string): Promise<boolean> {
+    // 发送前记录基线元素与内容，彻底隔离历史回合文本
+    this.recordBaseline();
+
     const input = this.findInputElement();
     if (!input) {
       console.error('[DeepSeekAdapter] Input element not found');
@@ -164,6 +195,15 @@ export class DeepSeekAdapter implements AISiteAdapter {
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
+
+        // 若当前元素是基线元素且文本未变化，说明 AI 还未产出本次回复，返回空字符串阻断过早判定完成
+        if (lastMsgEl === this.baselineLastElement) {
+          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+          if (currentText === this.baselineLastContent) {
+            return '';
+          }
+        }
+
         const md = domToMarkdown(lastMsgEl);
         const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         this.currentSnapshot = result;

@@ -9,11 +9,19 @@ import { isLoginButtonPresent } from '../utils/dom-checker';
 
 export class WenxinAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Wenxin';
-  public readonly urlPattern = /^https:\/\/wenxin\.baidu\.com(\/.*)?$/;
+  public readonly urlPattern = /^https:\/\/(wenxin|yiyan)\.baidu\.com(\/.*)?$/;
   public readonly adapterVersion = '1.0.0';
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private baselineLastElement: HTMLElement | null = null;
+  private baselineLastContent = '';
+
+  public recordBaseline(): void {
+    const el = this.findLatestAssistantMessageElement();
+    this.baselineLastElement = el;
+    this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+  }
 
   public async isReady(): Promise<boolean> {
     const input = this.findInputElement();
@@ -49,12 +57,29 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   public async createNewChat(): Promise<void> {
-    const newChatBtn = document.querySelector<HTMLElement>(
-      'div[class*="new-chat"], button[class*="new-chat"], span[class*="newChat"]'
-    );
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button, span, a'));
+    const newChatBtn = candidates.find((el) => {
+      const text = (el.innerText || el.textContent || '').trim();
+      const aria = (el.getAttribute('aria-label') || '').trim();
+      return (
+        text === '新建对话' ||
+        text === '新建会话' ||
+        text === '新对话' ||
+        text === 'New chat' ||
+        aria.includes('新建') ||
+        el.getAttribute('href') === '/'
+      );
+    });
+
     if (newChatBtn && window.location.pathname !== '/') {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(800);
+      return;
+    }
+
+    if (window.location.pathname !== '/' && window.location.pathname.length > 1) {
+      window.location.href = 'https://yiyan.baidu.com/';
+      await this.sleep(1000);
     }
   }
 
@@ -63,6 +88,8 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   public async sendPrompt(prompt: string): Promise<boolean> {
+    this.recordBaseline();
+
     const input = this.findInputElement();
     if (!input) return false;
 
@@ -138,6 +165,14 @@ export class WenxinAdapter implements AISiteAdapter {
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
+
+        if (lastMsgEl === this.baselineLastElement) {
+          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+          if (currentText === this.baselineLastContent) {
+            return '';
+          }
+        }
+
         const md = domToMarkdown(lastMsgEl);
         const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         this.currentSnapshot = result;

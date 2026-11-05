@@ -3,7 +3,7 @@ import { wenxinAdapter } from '../lib/adapters/wenxin.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
 
 export default defineContentScript({
-  matches: ['https://wenxin.baidu.com/*'],
+  matches: ['https://wenxin.baidu.com/*', 'https://yiyan.baidu.com/*'],
   runAt: 'document_idle',
   main() {
     console.log('[Multi-AI Council] Wenxin content script initialized');

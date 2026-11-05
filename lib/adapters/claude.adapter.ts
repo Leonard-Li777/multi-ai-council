@@ -14,6 +14,14 @@ export class ClaudeAdapter implements AISiteAdapter {
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private baselineLastElement: HTMLElement | null = null;
+  private baselineLastContent = '';
+
+  public recordBaseline(): void {
+    const el = this.findLatestAssistantMessageElement();
+    this.baselineLastElement = el;
+    this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+  }
 
   /**
    * 检查页面是否就绪（Claude ProseMirror 富文本输入框已呈现）
@@ -91,6 +99,8 @@ export class ClaudeAdapter implements AISiteAdapter {
    * 注入提示词并点击发送（攻坚 ProseMirror contenteditable 与状态同步）
    */
   public async sendPrompt(prompt: string): Promise<boolean> {
+    this.recordBaseline();
+
     const input = this.findInputElement();
     if (!input) {
       console.error('[ClaudeAdapter] Input element not found');
@@ -179,6 +189,14 @@ export class ClaudeAdapter implements AISiteAdapter {
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
+
+        if (lastMsgEl === this.baselineLastElement) {
+          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+          if (currentText === this.baselineLastContent) {
+            return '';
+          }
+        }
+
         const md = domToMarkdown(lastMsgEl);
         const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         this.currentSnapshot = result;
