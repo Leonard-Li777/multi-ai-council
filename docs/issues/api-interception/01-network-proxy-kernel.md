@@ -1,6 +1,6 @@
 # Ticket 01: MAIN World 网络代理内核与输入叩门增强
 
-- **状态**: ready-for-agent
+- **状态**: completed
 - **类型**: AFK
 - **环级归属**: 第 4 环 (L4 Context & History)
 - **父级目标**: [API 旁路拦截流式应答与轻量双轨架构技术规格说明书](../../specs/api-interception-spec.md)
@@ -23,13 +23,13 @@
 
 ## 验收准则 (Acceptance criteria)
 
-- [ ] **AC1 (WXT 合规构建)**：`entrypoints/interceptor.content/index.ts` 声明为 `world: 'MAIN', runAt: 'document_start'`，编译打包后在严格 CSP 站点 0 报错。
-- [ ] **AC2 (多字节 UTF-8 零乱码)**：单元测试验证汉字字符串跨包任意奇数字节拆分输入，持久化 TextDecoder 解码输出 100% 保持原字符，0 出现 `\uFFFD`。
-- [ ] **AC8 (XHR 双事件全通与防御)**：模拟 XHR 流式响应，`progress` 与 `readystatechange` 协同切片 0 漏帧；在 `arraybuffer` 等非文本类型下安全跳过 0 抛异常。
-- [ ] **AC-PERF (XHR 切片性能基准)**：针对 50 万字符 XHR 流式响应，`flushDelta()` 累计切片耗时 < 200ms（或相对耗时不超过原生 `responseText` 属性读取耗时的 2 倍），游标切片不得因长文本阻塞主线程超过 50ms。
-- [ ] **AC-SEMANTICS (`endReason` 与 `status` 语义解耦)**：网页 cancel 时派发 `status: 'PARTIAL', isDone: true, endReason: 'PAGE_ABORT'`；下游测试验证状态机准确判定为未完成中止，绝不误判为 `DONE`。
-- [ ] **AC-INPUT (输入叩门无损)**：textarea 与 ProseMirror/Quill 富文本测试中，文本 100% 正确填入并触发提交，且不触发原页面输入校验报错。
-- [ ] **AC10a (管道层 postMessage 硬防御单测 - 接收端使用 test double / 独立校验函数，不依赖 Ticket 02)**：
+- [x] **AC1 (WXT 合规构建)**：`entrypoints/interceptor.content.ts` 声明为 `world: 'MAIN', runAt: 'document_start'`，编译打包后在严格 CSP 站点 0 报错。
+- [x] **AC2 (多字节 UTF-8 零乱码)**：单元测试验证汉字字符串跨包任意奇数字节拆分输入，持久化 TextDecoder 解码输出 100% 保持原字符，0 出现 `\uFFFD`。
+- [x] **AC8 (XHR 双事件全通与防御)**：模拟 XHR 流式响应，`progress` 与 `readystatechange` 协同切片 0 漏帧；在 `arraybuffer` 等非文本类型下安全跳过 0 抛异常。
+- [x] **AC-PERF (XHR 切片性能基准)**：针对 50 万字符 XHR 流式响应，`flushDelta()` 累计切片耗时 < 200ms（或相对耗时不超过原生 `responseText` 属性读取耗时的 2 倍），游标切片不得因长文本阻塞主线程超过 50ms。
+- [x] **AC-SEMANTICS (`endReason` 与 `status` 语义解耦)**：网页 cancel 时派发 `status: 'PARTIAL', isDone: true, endReason: 'PAGE_ABORT'`；下游测试验证状态机准确判定为未完成中止，绝不误判为 `DONE`。
+- [x] **AC-INPUT (输入叩门无损)**：textarea 与 ProseMirror/Quill 富文本测试中，文本 100% 正确填入并触发提交，且不触发原页面输入校验报错。
+- [x] **AC10a (管道层 postMessage 硬防御单测 - 接收端使用 test double / 独立校验函数，不依赖 Ticket 02)**：
   - 拒绝未注册 `streamId` 的直接 `isDone: true` 虚构握手；
   - 针对已处于终端态（`DONE` / `PARTIAL` / `ERROR`）的 `streamId`，后续延迟到来的流式增量帧 100% 丢弃；
   - 超过 `MAX_STREAM_FRAME_SIZE` 的异常帧直接拦截丢弃；

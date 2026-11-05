@@ -1,10 +1,15 @@
+export interface SimulateTextInputOptions {
+  autoSubmit?: boolean;
+}
+
 /**
  * 健壮的富文本输入模拟工具
  * 支持普通 textarea 与 ProseMirror/Lexical/Quill 等 contenteditable 受控组件
  */
 export async function simulateTextInput(
   element: HTMLElement,
-  text: string
+  text: string,
+  options?: SimulateTextInputOptions
 ): Promise<boolean> {
   element.focus();
 
@@ -23,6 +28,13 @@ export async function simulateTextInput(
     );
     element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     element.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+    if (options?.autoSubmit) {
+      const form = element.closest('form');
+      if (form && typeof form.requestSubmit === 'function') {
+        form.requestSubmit();
+      }
+    }
     return true;
   }
 
