@@ -1,8 +1,32 @@
 {
-  "name": "wxt-react-starter",
-  "description": "manifest.json description",
-  "private": true,
-  "version": "0.0.0",
+  "name": "multi-ai-council",
+  "displayName": "Multi-AI Council - 智能多模型协作工作台",
+  "description": "基于 Chrome Extension MV3 的多模型会话分发、流式抓取、Quorum降级与DeepSeek匿名终审提炼工作台",
+  "version": "1.0.0",
+  "private": false,
+  "license": "MIT",
+  "author": "Leonard Li <seaeye777@qq.com>",
+  "homepage": "https://github.com/Leonard-Li777/multi-ai-council",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Leonard-Li777/multi-ai-council.git"
+  },
+  "keywords": [
+    "chrome-extension",
+    "mv3",
+    "ai-agent",
+    "deepseek",
+    "chatgpt",
+    "claude",
+    "gemini",
+    "qwen",
+    "wenxin",
+    "chatglm",
+    "synthesis",
+    "react19",
+    "wxt",
+    "tailwind-css"
+  ],
   "type": "module",
   "scripts": {
     "dev": "wxt",
