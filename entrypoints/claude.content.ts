@@ -10,9 +10,12 @@ export default defineContentScript({
 
     let stopListening: (() => void) | null = null;
     let currentJobId: string | null = null;
+    let sendFn: ((msg: PortMessage) => void) | null = null;
+    const send = (msg: PortMessage) => {
+      if (sendFn) sendFn(msg);
+    };
 
-    // 建立带心跳的长连接
-    const { send } = setupPortWithHeartbeat(CONTENT_PORT_NAME, async (msg: PortMessage) => {
+    const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Claude') {
         const { jobId, prompt, isContinuation } = msg.payload;
         currentJobId = jobId;
@@ -137,16 +140,32 @@ export default defineContentScript({
           }
         );
       }
-    });
+    };
 
-    // 页面加载完成后，向后台报告 Ready
-    send({
-      type: 'CONTENT_READY',
-      payload: {
-        siteName: 'Claude',
-        url: window.location.href,
-      },
-    });
+    // 建立带心跳的长连接并在连接或重连时自动注册 CONTENT_READY
+    const { send: boundSend } = setupPortWithHeartbeat(
+      CONTENT_PORT_NAME,
+      handleIncomingMessage,
+      undefined,
+      (readySend) => {
+        readySend({
+          type: 'CONTENT_READY',
+          payload: {
+            siteName: 'Claude',
+            url: window.location.href,
+          },
+        });
+      }
+    );
+    sendFn = boundSend;
+
+    // 兼听 runtime.onMessage（支持 tabs.sendMessage 直达调度）
+    const runtimeMessageListener = (msg: PortMessage) => {
+      handleIncomingMessage(msg);
+    };
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(runtimeMessageListener);
+    }
 
     // 监听 URL 变化（如 Claude 从 / 或 /new 变为 /chat/:id），实时同步会话引用
     let lastUrl = window.location.href;
@@ -168,6 +187,9 @@ export default defineContentScript({
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
       clearInterval(urlCheckInterval);
+      if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+        chrome.runtime.onMessage.removeListener(runtimeMessageListener);
+      }
     });
   },
 });

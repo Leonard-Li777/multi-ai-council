@@ -11,6 +11,7 @@ import {
 import {
   SIDEPANEL_PORT_NAME,
   setupPortWithHeartbeat,
+  sendToBackground,
   type PortMessage,
 } from '../../lib/messaging/port';
 import { SiteChecklist } from '../../components/SiteChecklist';
@@ -70,24 +71,40 @@ export const App: React.FC = () => {
     }
     init();
 
-    // 建立带心跳的 Port 连接
+    // 建立带心跳的 Port 连接与 runtime.onMessage 双通道监听
+    const handleJobSync = (job: ReviewJob) => {
+      setActiveJob(job);
+      const ref = job.providerRuns['DeepSeek']?.conversationRef;
+      if (ref?.conversationUrl) {
+        setActiveConvUrl(ref.conversationUrl);
+      }
+    };
+
     const { port, send } = setupPortWithHeartbeat(SIDEPANEL_PORT_NAME, (msg: PortMessage) => {
       if (msg.type === 'JOB_SYNC') {
-        setActiveJob(msg.payload.job);
-        const ref = msg.payload.job.providerRuns['DeepSeek']?.conversationRef;
-        if (ref?.conversationUrl) {
-          setActiveConvUrl(ref.conversationUrl);
-        }
+        handleJobSync(msg.payload.job);
       }
     });
 
     portSendRef.current = send;
+
+    const runtimeMsgListener = (msg: PortMessage) => {
+      if (msg.type === 'JOB_SYNC') {
+        handleJobSync(msg.payload.job);
+      }
+    };
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(runtimeMsgListener);
+    }
 
     return () => {
       try {
         port.disconnect();
       } catch {
         // ignore disconnect on unmounted
+      }
+      if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+        chrome.runtime.onMessage.removeListener(runtimeMsgListener);
       }
     };
   }, []);
@@ -118,7 +135,7 @@ export const App: React.FC = () => {
     for (const site of selectedSites) {
       initialRuns[site] = {
         siteName: site,
-        status: 'PENDING',
+        status: 'OPENING_TAB',
         responseSnapshot: '',
         cleanedResponse: '',
         retryCount: 0,
@@ -148,6 +165,7 @@ export const App: React.FC = () => {
     if (portSendRef.current) {
       portSendRef.current({ type: 'START_JOB', payload: { job: newJob } });
     }
+    await sendToBackground({ type: 'START_JOB', payload: { job: newJob } });
   };
 
   // 清空任务与会话绑定
@@ -204,19 +222,16 @@ export const App: React.FC = () => {
 
   const isTimedOut = activeJob ? isJobTimedOut(activeJob, currentTime) : false;
 
+  const isSynthesisRunning =
+    activeJob?.synthesisRun?.status === 'OPENING_TAB' ||
+    activeJob?.synthesisRun?.status === 'WAITING_READY' ||
+    activeJob?.synthesisRun?.status === 'SENDING' ||
+    activeJob?.synthesisRun?.status === 'STREAMING';
+
   const isRunning =
     activeJob !== null &&
-    (Object.values(activeJob.providerRuns).some(
-      (run) =>
-        run.status === 'OPENING_TAB' ||
-        run.status === 'WAITING_READY' ||
-        run.status === 'SENDING' ||
-        run.status === 'STREAMING'
-    ) ||
-      activeJob.synthesisRun?.status === 'OPENING_TAB' ||
-      activeJob.synthesisRun?.status === 'WAITING_READY' ||
-      activeJob.synthesisRun?.status === 'SENDING' ||
-      activeJob.synthesisRun?.status === 'STREAMING');
+    activeJob.active &&
+    (!quorumProgress?.isAllSettled || isSynthesisRunning);
 
   // 选择并重载历史任务
   const handleSelectHistoryJob = async (job: ReviewJob) => {

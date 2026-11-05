@@ -10,8 +10,12 @@ export default defineContentScript({
 
     let stopListening: (() => void) | null = null;
     let currentJobId: string | null = null;
+    let sendFn: ((msg: PortMessage) => void) | null = null;
+    const send = (msg: PortMessage) => {
+      if (sendFn) sendFn(msg);
+    };
 
-    const { send } = setupPortWithHeartbeat(CONTENT_PORT_NAME, async (msg: PortMessage) => {
+    const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Gemini') {
         const { jobId, prompt, isContinuation } = msg.payload;
         currentJobId = jobId;
@@ -111,15 +115,32 @@ export default defineContentScript({
           }
         );
       }
-    });
+    };
 
-    send({
-      type: 'CONTENT_READY',
-      payload: {
-        siteName: 'Gemini',
-        url: window.location.href,
-      },
-    });
+    // 建立带心跳的长连接并在连接或重连时自动注册 CONTENT_READY
+    const { send: boundSend } = setupPortWithHeartbeat(
+      CONTENT_PORT_NAME,
+      handleIncomingMessage,
+      undefined,
+      (readySend) => {
+        readySend({
+          type: 'CONTENT_READY',
+          payload: {
+            siteName: 'Gemini',
+            url: window.location.href,
+          },
+        });
+      }
+    );
+    sendFn = boundSend;
+
+    // 兼听 runtime.onMessage（支持 tabs.sendMessage 直达调度）
+    const runtimeMessageListener = (msg: PortMessage) => {
+      handleIncomingMessage(msg);
+    };
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(runtimeMessageListener);
+    }
 
     let lastUrl = window.location.href;
     const urlCheckInterval = window.setInterval(() => {
@@ -139,6 +160,9 @@ export default defineContentScript({
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
       clearInterval(urlCheckInterval);
+      if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+        chrome.runtime.onMessage.removeListener(runtimeMessageListener);
+      }
     });
   },
 });

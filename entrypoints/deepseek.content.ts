@@ -10,9 +10,12 @@ export default defineContentScript({
 
     let stopListening: (() => void) | null = null;
     let currentJobId: string | null = null;
+    let sendFn: ((msg: PortMessage) => void) | null = null;
+    const send = (msg: PortMessage) => {
+      if (sendFn) sendFn(msg);
+    };
 
-    // 建立带心跳的长连接
-    const { send } = setupPortWithHeartbeat(CONTENT_PORT_NAME, async (msg: PortMessage) => {
+    const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'DeepSeek') {
         const { jobId, prompt, isContinuation } = msg.payload;
         currentJobId = jobId;
@@ -158,12 +161,12 @@ export default defineContentScript({
         if (!validated) {
           send({
             type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'FAILED', errorReason: '终审提交后会话未响应' },
+            payload: { jobId, status: 'FAILED', errorReason: '终审提交后页面无响应' },
           });
           return;
         }
 
-        // 5. 标记为 STREAMING 并启动监听
+        // 5. 标记为 STREAMING 并监听生成
         send({
           type: 'SYNTHESIS_STATUS_CHANGE',
           payload: { jobId, status: 'STREAMING' },
@@ -174,12 +177,12 @@ export default defineContentScript({
         }
 
         stopListening = deepSeekAdapter.listenGeneration(
-          (snapshot, cleaned) => {
+          (snapshot) => {
             send({
               type: 'SYNTHESIS_STREAM_UPDATE',
               payload: {
                 jobId,
-                snapshot: cleaned || snapshot,
+                snapshot,
                 isFinished: false,
               },
             });
@@ -205,16 +208,32 @@ export default defineContentScript({
           }
         );
       }
-    });
+    };
 
-    // 页面加载完成后，向后台报告 Ready
-    send({
-      type: 'CONTENT_READY',
-      payload: {
-        siteName: 'DeepSeek',
-        url: window.location.href,
-      },
-    });
+    // 建立带心跳的长连接并在连接或重连时自动注册 CONTENT_READY
+    const { send: boundSend } = setupPortWithHeartbeat(
+      CONTENT_PORT_NAME,
+      handleIncomingMessage,
+      undefined,
+      (readySend) => {
+        readySend({
+          type: 'CONTENT_READY',
+          payload: {
+            siteName: 'DeepSeek',
+            url: window.location.href,
+          },
+        });
+      }
+    );
+    sendFn = boundSend;
+
+    // 兼听 runtime.onMessage（支持 tabs.sendMessage 直达调度）
+    const runtimeMessageListener = (msg: PortMessage) => {
+      handleIncomingMessage(msg);
+    };
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+      chrome.runtime.onMessage.addListener(runtimeMessageListener);
+    }
 
     // 监听 URL 变化（如 DeepSeek 从 / 变为 /a/chat/s/:id），实时同步会话引用
     let lastUrl = window.location.href;
@@ -236,6 +255,9 @@ export default defineContentScript({
     window.addEventListener('beforeunload', () => {
       if (stopListening) stopListening();
       clearInterval(urlCheckInterval);
+      if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+        chrome.runtime.onMessage.removeListener(runtimeMessageListener);
+      }
     });
   },
 });

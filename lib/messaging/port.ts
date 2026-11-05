@@ -88,47 +88,96 @@ export type PortMessage =
     };
 
 /**
- * 建立长连接并带自动心跳机制
+ * 向 Background 统一发送控制消息（优先 sendMessage 唤醒 SW）
+ */
+export async function sendToBackground(msg: PortMessage): Promise<void> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      await chrome.runtime.sendMessage(msg);
+    }
+  } catch (err) {
+    console.warn('[Messaging] chrome.runtime.sendMessage fallback warning:', err);
+  }
+}
+
+/**
+ * 建立长连接并带自动心跳机制与断线重连保障
  */
 export function setupPortWithHeartbeat(
   portName: string,
   onMessage: (msg: PortMessage) => void,
-  onDisconnect?: () => void
+  onDisconnect?: () => void,
+  onConnect?: (send: (msg: PortMessage) => void) => void
 ): { port: chrome.runtime.Port; send: (msg: PortMessage) => void } {
-  const port = chrome.runtime.connect({ name: portName });
+  let activePort: chrome.runtime.Port | null = null;
+  let interval: ReturnType<typeof setInterval> | null = null;
+  let isUnmounted = false;
 
-  const interval = setInterval(() => {
+  const send = (msg: PortMessage) => {
+    // 1. 尝试通过当前活跃 Port 发送
+    if (activePort) {
+      try {
+        activePort.postMessage(msg);
+      } catch (err) {
+        console.warn(`[Port ${portName}] postMessage failed, trying fallback`, err);
+      }
+    }
+    // 2. 双保险：派发 runtime.sendMessage 确保即使 Port 断开也能唤醒 Service Worker
+    sendToBackground(msg);
+  };
+
+  function connect() {
+    if (isUnmounted) return;
     try {
-      port.postMessage({ type: 'PING' });
-    } catch {
-      clearInterval(interval);
-    }
-  }, 10000); // 10s 心跳防止 SW 被意外休眠中断
+      activePort = chrome.runtime.connect({ name: portName });
 
-  port.onMessage.addListener((msg: PortMessage) => {
-    if (msg.type === 'PING') {
-      port.postMessage({ type: 'PONG' });
-      return;
-    }
-    if (msg.type === 'PONG') {
-      return;
-    }
-    onMessage(msg);
-  });
+      if (interval) clearInterval(interval);
+      interval = setInterval(() => {
+        try {
+          activePort?.postMessage({ type: 'PING' });
+        } catch {
+          if (interval) clearInterval(interval);
+        }
+      }, 10000); // 10s 心跳防止 SW 被意外休眠中断
 
-  port.onDisconnect.addListener(() => {
-    clearInterval(interval);
-    if (onDisconnect) onDisconnect();
-  });
+      activePort.onMessage.addListener((msg: PortMessage) => {
+        if (msg.type === 'PING') {
+          activePort?.postMessage({ type: 'PONG' });
+          return;
+        }
+        if (msg.type === 'PONG') {
+          return;
+        }
+        onMessage(msg);
+      });
+
+      if (onConnect) {
+        onConnect(send);
+      }
+
+      activePort.onDisconnect.addListener(() => {
+        if (interval) clearInterval(interval);
+        if (onDisconnect) onDisconnect();
+        activePort = null;
+        // 若非主动注销，断线后 1.5s 自动重连
+        if (!isUnmounted) {
+          setTimeout(connect, 1500);
+        }
+      });
+    } catch (err) {
+      console.warn(`[Port ${portName}] Connect error:`, err);
+      if (!isUnmounted) {
+        setTimeout(connect, 2000);
+      }
+    }
+  }
+
+  connect();
 
   return {
-    port,
-    send: (msg: PortMessage) => {
-      try {
-        port.postMessage(msg);
-      } catch (err) {
-        console.warn(`[Port ${portName}] send failed`, err);
-      }
+    get port() {
+      return activePort!;
     },
+    send,
   };
 }

@@ -23,13 +23,13 @@ import { buildAnonymizedSynthesisPrompt } from '../lib/utils/synthesis-builder';
 import { calculateQuorumProgress } from '../lib/utils/quorum-calculator';
 
 const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
-  DeepSeek: ['*://chat.deepseek.com/*'],
-  ChatGPT: ['*://chatgpt.com/*'],
-  Claude: ['*://claude.ai/*'],
-  Gemini: ['*://gemini.google.com/*'],
-  Qwen: ['*://chat.qwen.ai/*'],
-  Wenxin: ['*://wenxin.baidu.com/*'],
-  ChatGLM: ['*://chatglm.cn/*'],
+  DeepSeek: ['https://chat.deepseek.com/*'],
+  ChatGPT: ['https://chatgpt.com/*'],
+  Claude: ['https://claude.ai/*'],
+  Gemini: ['https://gemini.google.com/*'],
+  Qwen: ['https://chat.qwen.ai/*'],
+  Wenxin: ['https://wenxin.baidu.com/*'],
+  ChatGLM: ['https://chatglm.cn/*'],
 };
 
 export default defineBackground(() => {
@@ -50,82 +50,246 @@ export default defineBackground(() => {
   let synthesisPort: chrome.runtime.Port | null = null;
   let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string } | null = null;
 
+  // 广播状态更新至 Side Panel（双通道：Port + runtime.sendMessage）
+  function broadcastJobSync(job: ReviewJob | null) {
+    if (!job) return;
+    if (sidePanelPort) {
+      try {
+        sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job } });
+      } catch (err) {
+        console.warn('[Background] broadcastJobSync via port failed', err);
+      }
+    }
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({ type: 'JOB_SYNC', payload: { job } }).catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // 统一处理 Content Script 上报的消息（支持 Port 与 runtime.onMessage）
+  async function handleContentScriptMessage(msg: PortMessage, port?: chrome.runtime.Port) {
+    if (msg.type === 'CONTENT_READY') {
+      const senderTabId = port?.sender?.tab?.id;
+      const isSynthesisTab = senderTabId !== undefined && senderTabId === synthesisTabId;
+
+      if (isSynthesisTab || (synthesisTabId && senderTabId === synthesisTabId)) {
+        console.log('[Background] Synthesis DeepSeek Tab ready');
+        if (port) synthesisPort = port;
+        if (pendingSynthesisMetaPrompt) {
+          if (synthesisPort) {
+            try {
+              synthesisPort.postMessage({
+                type: 'DISPATCH_SYNTHESIS_PROMPT',
+                payload: pendingSynthesisMetaPrompt,
+              });
+            } catch {}
+          }
+          if (synthesisTabId) {
+            chrome.tabs.sendMessage(synthesisTabId, {
+              type: 'DISPATCH_SYNTHESIS_PROMPT',
+              payload: pendingSynthesisMetaPrompt,
+            }).catch(() => {});
+          }
+          pendingSynthesisMetaPrompt = null;
+        }
+        return;
+      }
+
+      const siteName = msg.payload.siteName;
+      if (port) {
+        contentPorts.set(siteName, port);
+      }
+      console.log(`[Background] Content Script ready for ${siteName}`);
+
+      // 若当前有正处于 WAITING_READY 的任务，立即下发
+      const activeJob = await getActiveJob();
+      if (
+        activeJob &&
+        activeJob.providerRuns[siteName]?.status === 'WAITING_READY'
+      ) {
+        await dispatchToSite(
+          siteName,
+          activeJob.id,
+          activeJob.originalPrompt,
+          activeJob.isContinuation
+        );
+      }
+    } else if (msg.type === 'STATUS_CHANGE') {
+      const { siteName, jobId, status, errorReason, conversationUrl } = msg.payload;
+
+      let convRef: ProviderConversationRef | undefined = undefined;
+      if (conversationUrl) {
+        const convId = extractConversationId(conversationUrl);
+        convRef = {
+          siteName,
+          conversationUrl,
+          conversationId: convId || undefined,
+          lastUpdatedAt: Date.now(),
+        };
+        await saveConversationRef(convRef);
+      }
+
+      const updated = await updateProviderRun(jobId, siteName, {
+        status,
+        errorReason,
+        completedAt: status === 'DONE' ? Date.now() : undefined,
+        conversationRef: convRef,
+      });
+
+      broadcastJobSync(updated);
+
+      if (status === 'DONE' || status === 'FAILED' || status === 'TIMEOUT') {
+        await checkAutoTriggerSynthesis(jobId);
+      }
+    } else if (msg.type === 'STREAM_UPDATE') {
+      const { siteName, jobId, snapshot, cleaned, isFinished } = msg.payload;
+      const updated = await updateProviderRun(jobId, siteName, {
+        responseSnapshot: snapshot,
+        cleanedResponse: cleaned,
+        status: isFinished ? 'DONE' : 'STREAMING',
+      });
+
+      broadcastJobSync(updated);
+
+      if (isFinished) {
+        await checkAutoTriggerSynthesis(jobId);
+      }
+    } else if (msg.type === 'SYNTHESIS_STREAM_UPDATE') {
+      const { jobId, snapshot, isFinished } = msg.payload;
+      const updated = await updateSynthesisRun(jobId, {
+        status: isFinished ? 'DONE' : 'STREAMING',
+        finalMarkdown: snapshot,
+      });
+      broadcastJobSync(updated);
+    } else if (msg.type === 'SYNTHESIS_STATUS_CHANGE') {
+      const { jobId, status, finalMarkdown, errorReason } = msg.payload;
+      const updated = await updateSynthesisRun(jobId, {
+        status,
+        finalMarkdown,
+      });
+      broadcastJobSync(updated);
+    } else if (msg.type === 'UPDATE_CONVERSATION_URL') {
+      const { siteName, jobId, conversationUrl } = msg.payload;
+      const convId = extractConversationId(conversationUrl);
+      const convRef: ProviderConversationRef = {
+        siteName,
+        conversationUrl,
+        conversationId: convId || undefined,
+        lastUpdatedAt: Date.now(),
+      };
+      await saveConversationRef(convRef);
+
+      if (jobId) {
+        const updated = await updateProviderRun(jobId, siteName, {
+          conversationRef: convRef,
+        });
+        broadcastJobSync(updated);
+      }
+    }
+  }
+
+  // 统一指令消息处理路由（同时服务于 Port 与 chrome.runtime.onMessage）
+  async function handleIncomingControlMessage(msg: PortMessage, port?: chrome.runtime.Port) {
+    console.log('[Background] Received message:', msg.type);
+
+    if (msg.type === 'START_JOB') {
+      await handleStartJob(msg.payload.job);
+    } else if (msg.type === 'FOCUS_TAB') {
+      let tabId = siteTabs.get(msg.payload.siteName);
+      if (!tabId) {
+        const activeJob = await getActiveJob();
+        tabId = activeJob?.providerRuns[msg.payload.siteName]?.tabId;
+      }
+      if (!tabId) {
+        const queryPatterns = SITE_QUERY_PATTERNS[msg.payload.siteName] || ['https://chat.deepseek.com/*'];
+        try {
+          const tabs = await chrome.tabs.query({ url: queryPatterns });
+          if (tabs.length > 0 && tabs[0]?.id) {
+            tabId = tabs[0].id;
+            siteTabs.set(msg.payload.siteName, tabId);
+          }
+        } catch (e) {
+          console.warn('[Background] FOCUS_TAB query error', e);
+        }
+      }
+      if (tabId) {
+        chrome.tabs.update(tabId, { active: true }, (tab) => {
+          if (tab?.windowId) {
+            chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+          }
+        });
+      }
+    } else if (msg.type === 'RETRY_SITE') {
+      const activeJob = await getActiveJob();
+      if (activeJob) {
+        await dispatchToSite(msg.payload.siteName, activeJob.id, activeJob.originalPrompt, activeJob.isContinuation);
+      }
+    } else if (msg.type === 'SKIP_SITE') {
+      const activeJob = await getActiveJob();
+      if (activeJob && (!msg.payload.jobId || activeJob.id === msg.payload.jobId)) {
+        contentPorts.delete(msg.payload.siteName);
+        const updated = await updateProviderRun(activeJob.id, msg.payload.siteName, {
+          status: 'CANCELED',
+          errorReason: msg.payload.reason || '用户手动跳过等待',
+          completedAt: Date.now(),
+        });
+        broadcastJobSync(updated);
+        await checkAutoTriggerSynthesis(activeJob.id);
+      }
+    } else if (msg.type === 'TRIGGER_SYNTHESIS') {
+      await triggerSynthesis(msg.payload.jobId);
+    } else if (msg.type === 'FAST_FORWARD_QUORUM') {
+      const activeJob = await getActiveJob();
+      if (activeJob && activeJob.id === msg.payload.jobId) {
+        const batchUpdates: Partial<Record<SupportedSite, Partial<ProviderRun>>> = {};
+        for (const [site, run] of Object.entries(activeJob.providerRuns)) {
+          if (
+            run.status === 'PENDING' ||
+            run.status === 'OPENING_TAB' ||
+            run.status === 'WAITING_READY' ||
+            run.status === 'SENDING' ||
+            run.status === 'STREAMING'
+          ) {
+            contentPorts.delete(site as SupportedSite);
+            batchUpdates[site as SupportedSite] = {
+              status: 'CANCELED',
+              errorReason: '提前降级终审跳过',
+              completedAt: Date.now(),
+            };
+          }
+        }
+        const updated = await batchUpdateProviderRuns(activeJob.id, batchUpdates);
+        broadcastJobSync(updated);
+        await triggerSynthesis(activeJob.id);
+      }
+    } else {
+      // 转发处理来自 Content Script 的消息
+      await handleContentScriptMessage(msg, port);
+    }
+  }
+
+  // 1. 注册 runtime.onMessage 监听（保障 SW 唤醒后的首要指令畅通）
+  chrome.runtime.onMessage.addListener((msg: PortMessage, _sender, sendResponse) => {
+    handleIncomingControlMessage(msg)
+      .then(() => sendResponse({ success: true }))
+      .catch((err) => {
+        console.error('[Background] handleIncomingControlMessage error:', err);
+        sendResponse({ success: false, error: String(err) });
+      });
+    return true; // 异步消息响应通道保活
+  });
+
+  // 2. 注册长连接 Port 监听
   chrome.runtime.onConnect.addListener((port: chrome.runtime.Port) => {
     if (port.name === SIDEPANEL_PORT_NAME) {
       sidePanelPort = port;
       console.log('[Background] Side Panel Port connected');
 
       port.onMessage.addListener(async (msg: PortMessage) => {
-        if (msg.type === 'START_JOB') {
-          await handleStartJob(msg.payload.job);
-        } else if (msg.type === 'FOCUS_TAB') {
-          let tabId = siteTabs.get(msg.payload.siteName);
-          if (!tabId) {
-            const activeJob = await getActiveJob();
-            tabId = activeJob?.providerRuns[msg.payload.siteName]?.tabId;
-          }
-          if (!tabId) {
-            const queryPatterns = SITE_QUERY_PATTERNS[msg.payload.siteName] || ['*://chat.deepseek.com/*'];
-            const tabs = await chrome.tabs.query({ url: queryPatterns });
-            if (tabs.length > 0 && tabs[0]?.id) {
-              tabId = tabs[0].id;
-              siteTabs.set(msg.payload.siteName, tabId);
-            }
-          }
-          if (tabId) {
-            chrome.tabs.update(tabId, { active: true }, (tab) => {
-              if (tab?.windowId) {
-                chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
-              }
-            });
-          }
-        } else if (msg.type === 'RETRY_SITE') {
-          const activeJob = await getActiveJob();
-          if (activeJob) {
-            await dispatchToSite(msg.payload.siteName, activeJob.id, activeJob.originalPrompt, activeJob.isContinuation);
-          }
-        } else if (msg.type === 'SKIP_SITE') {
-          const activeJob = await getActiveJob();
-          if (activeJob && (!msg.payload.jobId || activeJob.id === msg.payload.jobId)) {
-            contentPorts.delete(msg.payload.siteName);
-            const updated = await updateProviderRun(activeJob.id, msg.payload.siteName, {
-              status: 'CANCELED',
-              errorReason: msg.payload.reason || '用户手动跳过等待',
-              completedAt: Date.now(),
-            });
-            if (updated && sidePanelPort) {
-              sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-            }
-          }
-        } else if (msg.type === 'TRIGGER_SYNTHESIS') {
-          await triggerSynthesis(msg.payload.jobId);
-        } else if (msg.type === 'FAST_FORWARD_QUORUM') {
-          const activeJob = await getActiveJob();
-          if (activeJob && activeJob.id === msg.payload.jobId) {
-            const batchUpdates: Partial<Record<SupportedSite, Partial<ProviderRun>>> = {};
-            for (const [site, run] of Object.entries(activeJob.providerRuns)) {
-              if (
-                run.status === 'PENDING' ||
-                run.status === 'OPENING_TAB' ||
-                run.status === 'WAITING_READY' ||
-                run.status === 'SENDING' ||
-                run.status === 'STREAMING'
-              ) {
-                contentPorts.delete(site as SupportedSite);
-                batchUpdates[site as SupportedSite] = {
-                  status: 'CANCELED',
-                  errorReason: '提前降级终审跳过',
-                  completedAt: Date.now(),
-                };
-              }
-            }
-            const updated = await batchUpdateProviderRuns(activeJob.id, batchUpdates);
-            if (updated && sidePanelPort) {
-              sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-            }
-            await triggerSynthesis(activeJob.id);
-          }
-        }
+        await handleIncomingControlMessage(msg);
       });
 
       port.onDisconnect.addListener(() => {
@@ -146,118 +310,9 @@ export default defineBackground(() => {
 
       port.onMessage.addListener(async (msg: PortMessage) => {
         if (msg.type === 'CONTENT_READY') {
-          if (isSynthesisTab || (synthesisTabId && senderTabId === synthesisTabId)) {
-            console.log('[Background] Synthesis DeepSeek Tab ready');
-            synthesisPort = port;
-            if (pendingSynthesisMetaPrompt) {
-              synthesisPort.postMessage({
-                type: 'DISPATCH_SYNTHESIS_PROMPT',
-                payload: pendingSynthesisMetaPrompt,
-              });
-              pendingSynthesisMetaPrompt = null;
-            }
-            return;
-          }
-
           registeredSite = msg.payload.siteName;
-          contentPorts.set(registeredSite, port);
-          console.log(`[Background] Content Script ready for ${registeredSite}`);
-
-          // 若当前有正处于 WAITING_READY 的任务，立即下发
-          const activeJob = await getActiveJob();
-          if (
-            activeJob &&
-            activeJob.providerRuns[registeredSite]?.status === 'WAITING_READY'
-          ) {
-            await dispatchToSite(
-              registeredSite,
-              activeJob.id,
-              activeJob.originalPrompt,
-              activeJob.isContinuation
-            );
-          }
-        } else if (msg.type === 'STATUS_CHANGE') {
-          const { siteName, jobId, status, errorReason, conversationUrl } = msg.payload;
-
-          let convRef: ProviderConversationRef | undefined = undefined;
-          if (conversationUrl) {
-            const convId = extractConversationId(conversationUrl);
-            convRef = {
-              siteName,
-              conversationUrl,
-              conversationId: convId || undefined,
-              lastUpdatedAt: Date.now(),
-            };
-            await saveConversationRef(convRef);
-          }
-
-          const updated = await updateProviderRun(jobId, siteName, {
-            status,
-            errorReason,
-            completedAt: status === 'DONE' ? Date.now() : undefined,
-            conversationRef: convRef,
-          });
-
-          if (updated && sidePanelPort) {
-            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-          }
-
-          if (status === 'DONE' || status === 'FAILED' || status === 'TIMEOUT') {
-            await checkAutoTriggerSynthesis(jobId);
-          }
-        } else if (msg.type === 'STREAM_UPDATE') {
-          const { siteName, jobId, snapshot, cleaned, isFinished } = msg.payload;
-          const updated = await updateProviderRun(jobId, siteName, {
-            responseSnapshot: snapshot,
-            cleanedResponse: cleaned,
-            status: isFinished ? 'DONE' : 'STREAMING',
-          });
-
-          if (updated && sidePanelPort) {
-            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-          }
-
-          if (isFinished) {
-            await checkAutoTriggerSynthesis(jobId);
-          }
-        } else if (msg.type === 'SYNTHESIS_STREAM_UPDATE') {
-          const { jobId, snapshot, isFinished } = msg.payload;
-          const updated = await updateSynthesisRun(jobId, {
-            status: isFinished ? 'DONE' : 'STREAMING',
-            finalMarkdown: snapshot,
-          });
-          if (updated && sidePanelPort) {
-            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-          }
-        } else if (msg.type === 'SYNTHESIS_STATUS_CHANGE') {
-          const { jobId, status, finalMarkdown, errorReason } = msg.payload;
-          const updated = await updateSynthesisRun(jobId, {
-            status,
-            finalMarkdown,
-          });
-          if (updated && sidePanelPort) {
-            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-          }
-        } else if (msg.type === 'UPDATE_CONVERSATION_URL') {
-          const { siteName, jobId, conversationUrl } = msg.payload;
-          const convId = extractConversationId(conversationUrl);
-          const convRef: ProviderConversationRef = {
-            siteName,
-            conversationUrl,
-            conversationId: convId || undefined,
-            lastUpdatedAt: Date.now(),
-          };
-          await saveConversationRef(convRef);
-
-          if (jobId) {
-            const updated = await updateProviderRun(jobId, siteName, {
-              conversationRef: convRef,
-            });
-            if (updated && sidePanelPort) {
-              sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-            }
-          }
         }
+        await handleContentScriptMessage(msg, port);
       });
 
       port.onDisconnect.addListener(() => {
@@ -279,9 +334,7 @@ export default defineBackground(() => {
         const updated = await updateSynthesisRun(activeJob.id, {
           status: 'TAB_CLOSED',
         });
-        if (updated && sidePanelPort) {
-          sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
-        }
+        broadcastJobSync(updated);
       }
     }
 
@@ -294,8 +347,8 @@ export default defineBackground(() => {
             status: 'TAB_CLOSED',
             errorReason: '标签页被手动关闭',
           });
-          if (updated && sidePanelPort) {
-            sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+          broadcastJobSync(updated);
+          if (sidePanelPort) {
             sidePanelPort.postMessage({
               type: 'TAB_CLOSED',
               payload: { siteName: site, tabId },
@@ -308,10 +361,9 @@ export default defineBackground(() => {
   });
 
   async function handleStartJob(job: ReviewJob) {
+    console.log('[Background] handleStartJob started for job:', job.id);
     await saveActiveJob(job);
-    if (sidePanelPort) {
-      sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job } });
-    }
+    broadcastJobSync(job);
 
     // 针对启用的所有站点逐一调度与创建/复用标签页（引入 1.5~3s 错峰抖动平滑激活）
     let isFirst = true;
@@ -321,7 +373,17 @@ export default defineBackground(() => {
         await new Promise((r) => setTimeout(r, jitterMs));
       }
       isFirst = false;
-      await ensureSiteTabAndDispatch(siteName, job);
+
+      try {
+        await ensureSiteTabAndDispatch(siteName, job);
+      } catch (err) {
+        console.error(`[Background] Failed to dispatch to site ${siteName}:`, err);
+        const updated = await updateProviderRun(job.id, siteName, {
+          status: 'FAILED',
+          errorReason: `初始化调度异常: ${String(err)}`,
+        });
+        broadcastJobSync(updated);
+      }
     }
   }
 
@@ -332,8 +394,14 @@ export default defineBackground(() => {
     const baseUrl = SITE_BASE_URLS[siteName] || 'https://chat.deepseek.com/';
 
     // 1. 查找是否已有打开的对应站点标签页
-    const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['*://chat.deepseek.com/*'];
-    const tabs = await chrome.tabs.query({ url: queryPatterns });
+    const queryPatterns = SITE_QUERY_PATTERNS[siteName] || ['https://chat.deepseek.com/*'];
+    let tabs: chrome.tabs.Tab[] = [];
+    try {
+      tabs = await chrome.tabs.query({ url: queryPatterns });
+    } catch (e) {
+      console.warn(`[Background] chrome.tabs.query failed for ${siteName}`, e);
+    }
+
     let targetTab: chrome.tabs.Tab | undefined;
     let isNavigating = false;
 
@@ -345,11 +413,11 @@ export default defineBackground(() => {
       if (targetTab.url && targetTab.url !== targetUrl) {
         if (!job.isContinuation && targetTab.url !== baseUrl) {
           isNavigating = true;
-          contentPorts.delete(siteName); // 提前注销即将失效的旧页面 Port
+          contentPorts.delete(siteName);
           await chrome.tabs.update(targetTab.id, { url: targetUrl });
         } else if (job.isContinuation && existingRef?.conversationUrl && targetTab.url !== existingRef.conversationUrl) {
           isNavigating = true;
-          contentPorts.delete(siteName); // 提前注销即将失效的旧页面 Port
+          contentPorts.delete(siteName);
           await chrome.tabs.update(targetTab.id, { url: targetUrl });
         }
       }
@@ -389,8 +457,24 @@ export default defineBackground(() => {
         });
       }
       const updatedJob = await getActiveJob();
-      if (updatedJob && sidePanelPort) {
-        sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updatedJob } });
+      broadcastJobSync(updatedJob);
+
+      // 若标签页本就存在且无需导航，主动尝试 sendMessage 探测激活；若失败则刷新激活 Content Script
+      if (!isNavigating && targetTab?.id) {
+        try {
+          await chrome.tabs.sendMessage(targetTab.id, {
+            type: 'DISPATCH_PROMPT',
+            payload: {
+              siteName,
+              jobId: job.id,
+              prompt: job.originalPrompt,
+              isContinuation: job.isContinuation,
+            },
+          });
+        } catch {
+          console.log(`[Background] Refreshing tab for ${siteName} to boot content script...`);
+          await chrome.tabs.update(targetTab.id, { url: targetUrl });
+        }
       }
     }
   }
@@ -402,18 +486,45 @@ export default defineBackground(() => {
     isContinuation: boolean
   ) {
     const port = contentPorts.get(siteName);
+    let dispatched = false;
+
     if (port) {
-      port.postMessage({
-        type: 'DISPATCH_PROMPT',
-        payload: {
-          siteName,
-          jobId,
-          prompt,
-          isContinuation,
-        },
-      });
-    } else {
-      console.warn(`[Background] Port for ${siteName} not found during dispatch`);
+      try {
+        port.postMessage({
+          type: 'DISPATCH_PROMPT',
+          payload: {
+            siteName,
+            jobId,
+            prompt,
+            isContinuation,
+          },
+        });
+        dispatched = true;
+      } catch (e) {
+        console.warn(`[Background] Port dispatch failed for ${siteName}, fallback to sendMessage`, e);
+      }
+    }
+
+    const tabId = siteTabs.get(siteName);
+    if (tabId) {
+      try {
+        await chrome.tabs.sendMessage(tabId, {
+          type: 'DISPATCH_PROMPT',
+          payload: {
+            siteName,
+            jobId,
+            prompt,
+            isContinuation,
+          },
+        });
+        dispatched = true;
+      } catch {
+        // Tab might still be initializing
+      }
+    }
+
+    if (!dispatched) {
+      console.warn(`[Background] Could not dispatch to ${siteName} immediately, waiting for ready event`);
     }
   }
 
