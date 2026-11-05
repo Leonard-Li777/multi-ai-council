@@ -36,7 +36,7 @@ export const App: React.FC = () => {
   const [activeConvUrl, setActiveConvUrl] = useState<string>('');
   const [manualOverride, setManualOverride] = useState<boolean | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'prompt' | 'report'>('prompt');
+  const [activeTab, setActiveTab] = useState<'prompt' | 'replies' | 'synthesis' | 'settings'>('prompt');
 
   const portSendRef = useRef<((msg: PortMessage) => void) | null>(null);
 
@@ -161,7 +161,7 @@ export const App: React.FC = () => {
     };
 
     setActiveJob(newJob);
-    setActiveTab('report');
+    setActiveTab('replies');
     await saveActiveJob(newJob);
 
     if (portSendRef.current) {
@@ -352,123 +352,231 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* 顶部集中站点开启关闭及登录状态信息 */}
-        <SiteChecklist
-          selectedSites={selectedSites}
-          onChange={handleSitesChange}
-          onOpenSite={handleFocusTab}
-          onOpenAllSites={() => handleOpenAllSites(selectedSites)}
-          runs={activeJob?.providerRuns}
-          disabled={isRunning}
-        />
+        {/* 四大一级功能 Tab 导航栏 */}
+        <div className="flex items-center gap-1 bg-slate-200/60 dark:bg-slate-800/80 p-0.5 rounded-xl text-xs mb-1.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('prompt')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              activeTab === 'prompt'
+                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span>📝 会话提问</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('replies')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              activeTab === 'replies'
+                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span>🤖 AI回复</span>
+            {quorumProgress && (
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 font-mono">
+                {quorumProgress.completedCount}/{quorumProgress.totalEnabled}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('synthesis')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              activeTab === 'synthesis'
+                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span>⚖️ 终审看板</span>
+            {activeJob?.synthesisRun?.status === 'STREAMING' && (
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+            )}
+            {activeJob?.synthesisRun?.status === 'DONE' && (
+              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('settings')}
+            className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-all text-center flex items-center justify-center gap-1 cursor-pointer ${
+              activeTab === 'settings'
+                ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
+                : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+            }`}
+          >
+            <span>⚙️ 设置</span>
+          </button>
+        </div>
       </div>
 
-      {/* 中间核心内容区域：根据剩余空间自动缩放，无外部滚动条 */}
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden my-1">
-        {/* 当有活跃任务或终审报告时，提供轻量选项卡在会话提问与终审看板之间切换 */}
-        {activeJob && (
-          <div className="shrink-0 flex items-center justify-between pb-1.5 mb-1 border-b border-slate-200/60 dark:border-slate-800/60">
-            <div className="flex items-center gap-1 bg-slate-200/60 dark:bg-slate-800/80 p-0.5 rounded-lg text-[11px]">
-              <button
-                type="button"
-                onClick={() => setActiveTab('prompt')}
-                className={`px-2.5 py-1 rounded-md font-medium transition-all cursor-pointer ${
-                  activeTab === 'prompt'
-                    ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                }`}
-              >
-                📝 会话提问
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('report')}
-                className={`px-2.5 py-1 rounded-md font-medium transition-all flex items-center gap-1 cursor-pointer ${
-                  activeTab === 'report'
-                    ? 'bg-white dark:bg-slate-900 text-blue-600 dark:text-blue-400 shadow-2xs font-semibold'
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                }`}
-              >
-                <span>⚖️ 终审看板</span>
-                {quorumProgress && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
-                    {quorumProgress.completedCount}/{quorumProgress.totalEnabled}
-                  </span>
-                )}
-              </button>
+      {/* 中间核心内容区域：根据当前 Tab 占满垂直空间，内部独立滚动 */}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+        {/* Tab 1: 会话提问 */}
+        {activeTab === 'prompt' && (
+          <div className="flex-1 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0">
+              <PromptInput
+                value={promptText}
+                onChange={setPromptText}
+                lastPrompt={lastPrompt}
+                activeConversationUrl={activeConvUrl}
+                manualOverride={manualOverride}
+                onToggleOverride={handleToggleOverride}
+                disabled={isRunning}
+              />
             </div>
-
-            <div className="text-[10px] text-slate-400 font-mono">
-              Job: {activeJob.id.slice(0, 8)}
+            <div className="shrink-0 pt-2">
+              <JobControls
+                onStart={handleStart}
+                onClear={handleClear}
+                isRunning={isRunning}
+                canStart={promptText.trim().length > 0}
+                canFastForward={quorumProgress?.canFastForward || false}
+                onFastForward={handleFastForward}
+                fastForwardTooltip={
+                  quorumProgress?.canFastForward
+                    ? `已就绪 ${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站点（满足 Quorum ${quorumProgress.minRequired}），点击跳过剩余站点发起终审`
+                    : `Quorum 降级门槛：至少完成 ${quorumProgress?.minRequired || 1} 站点`
+                }
+              />
             </div>
           </div>
         )}
 
-        {/* 视图1：会话输入框（充满剩余垂直高度，滚动区域仅限 textarea 内部） */}
-        {(!activeJob || activeTab === 'prompt') && (
-          <PromptInput
-            value={promptText}
-            onChange={setPromptText}
-            lastPrompt={lastPrompt}
-            activeConversationUrl={activeConvUrl}
-            manualOverride={manualOverride}
-            onToggleOverride={handleToggleOverride}
-            disabled={isRunning}
-          />
+        {/* Tab 2: AI回复（多模型回复详情与一键复制） */}
+        {activeTab === 'replies' && (
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {/* 状态通知条与快捷控制 */}
+            {activeJob && (
+              <div className="shrink-0 mb-2 flex items-center justify-between bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-2.5 py-1.5 rounded-xl shadow-2xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-xs">
+                    进度：{quorumProgress ? `${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站完成` : '就绪'}
+                  </span>
+                  {quorumProgress && (
+                    <span className="text-[10px] text-slate-400">
+                      (门槛: {quorumProgress.minRequired})
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleExtendTimeout}
+                    className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    title="延长 90 秒等待时间"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    +90秒
+                  </button>
+                  {quorumProgress && quorumProgress.completedCount > 0 && (
+                    <button
+                      onClick={() => {
+                        handleFastForward();
+                        setActiveTab('synthesis');
+                      }}
+                      className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                      title="立即汇总各方观点进入终审看板"
+                    >
+                      <FastForward className="w-3 h-3" />
+                      去终审
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 站点卡片列表 */}
+            {activeJob ? (
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+                {selectedSites.map((site) => (
+                  <SiteStatusCard
+                    key={site}
+                    siteName={site}
+                    run={activeJob.providerRuns[site]}
+                    onFocusTab={() => handleFocusTab(site)}
+                    onRetry={() => handleRetry(site)}
+                    onSkip={() => handleSkipSite(site)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-center p-4">
+                <p className="text-sm font-medium mb-1">暂无进行中的会话回复</p>
+                <p className="text-xs text-slate-400 mb-3">
+                  请前往【📝 会话提问】输入提示词并开始提问
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('prompt')}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-2xs transition-colors"
+                >
+                  前往提问
+                </button>
+              </div>
+            )}
+          </div>
         )}
 
-        {/* 视图2：终审报告与各模型执行详情列表（仅在面板内部独立滚动） */}
-        {activeJob && activeTab === 'report' && (
-          <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-            {/* 顶层 DeepSeek 汇总窗口：汇集全部 AI 回复并在全新会话中提炼 */}
+        {/* Tab 3: 终审看板（DeepSeek 全景汇总窗口） */}
+        {activeTab === 'synthesis' && (
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1">
             <SynthesisCard
-              synthesisRun={activeJob.synthesisRun}
+              synthesisRun={activeJob?.synthesisRun}
               activeJob={activeJob}
               onFocusSynthesisTab={() => handleFocusTab('DeepSeek')}
               onTriggerSynthesis={handleFastForward}
               canTriggerSynthesis={(quorumProgress?.completedCount || 0) > 0}
             />
+          </div>
+        )}
 
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between px-0.5 pt-1">
-                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                  各站点实时详情
-                </span>
-                <span className="text-[10px] text-slate-400">
-                  可针对单站重试或跳过
-                </span>
+        {/* Tab 4: 设置（勾选启用的 AI 站点 & 系统控制） */}
+        {activeTab === 'settings' && (
+          <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-2xs">
+              <div className="mb-2">
+                <h3 className="font-semibold text-xs text-slate-800 dark:text-slate-200">
+                  AI 站点启用配置
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  勾选需要参与会话提问与终审对比的模型站点（至少勾选 1 个）
+                </p>
               </div>
 
-              {selectedSites.map((site) => (
-                <SiteStatusCard
-                  key={site}
-                  siteName={site}
-                  run={activeJob.providerRuns[site]}
-                  onFocusTab={() => handleFocusTab(site)}
-                  onRetry={() => handleRetry(site)}
-                  onSkip={() => handleSkipSite(site)}
-                />
-              ))}
+              <SiteChecklist
+                selectedSites={selectedSites}
+                onChange={handleSitesChange}
+                onOpenSite={handleFocusTab}
+                onOpenAllSites={() => handleOpenAllSites(selectedSites)}
+                runs={activeJob?.providerRuns}
+                disabled={isRunning}
+              />
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-2xs">
+              <h3 className="font-semibold text-xs text-slate-800 dark:text-slate-200 mb-1">
+                会话与缓存管理
+              </h3>
+              <p className="text-[11px] text-slate-400 mb-2">
+                清空当前活动任务及已保存的会话远程链接引用
+              </p>
+              <button
+                type="button"
+                onClick={handleClear}
+                className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/60 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 rounded-lg text-xs font-medium border border-rose-200 dark:border-rose-900 transition-colors cursor-pointer"
+              >
+                清空当前任务并重置会话
+              </button>
             </div>
           </div>
         )}
-      </div>
-
-      {/* 底部固定控制栏 */}
-      <div className="shrink-0 pt-1.5">
-        <JobControls
-          onStart={handleStart}
-          onClear={handleClear}
-          isRunning={isRunning}
-          canStart={promptText.trim().length > 0}
-          canFastForward={quorumProgress?.canFastForward || false}
-          onFastForward={handleFastForward}
-          fastForwardTooltip={
-            quorumProgress?.canFastForward
-              ? `已就绪 ${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站点（满足 Quorum ${quorumProgress.minRequired}），点击立即跳过剩余站点发起终审`
-              : `Quorum 降级门槛：至少完成 ${quorumProgress?.minRequired || 1} 站点`
-          }
-        />
       </div>
 
       {/* 历史任务抽屉 */}

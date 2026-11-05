@@ -101,17 +101,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(800);
-      if (this.hasExistingMessages()) {
-        window.location.href = 'https://chatgpt.com/';
-        await this.sleep(1000);
-      }
-      return;
-    }
-
-    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
-      window.location.href = 'https://chatgpt.com/';
-      await this.sleep(1000);
+      await this.sleep(500);
     }
   }
 
@@ -148,27 +138,31 @@ export class ChatGPTAdapter implements AISiteAdapter {
     const sendBtn = this.findSendButton();
     const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
+    let clicked = false;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
-      await this.sleep(200);
+      clicked = true;
+      await this.sleep(400);
     }
 
-    // 3. 检查输入框是否已被清空，若未清空则补发完整的 Enter 键盘事件
-    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
-    if (currentVal.trim().length > 0) {
-      const eventInit: KeyboardEventInit = {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-      };
-      input.focus();
-      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+    // 3. 仅当未点击成功且未进入停止生成状态时，才尝试 Enter 降级保底（防止重复提交两次）
+    if (!clicked && !this.findStopButton()) {
+      const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+      if (currentVal.trim().length > 0) {
+        const eventInit: KeyboardEventInit = {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        };
+        input.focus();
+        input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+        input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+        input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      }
     }
     return true;
   }
@@ -177,7 +171,6 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 验证消息是否提交成功
    */
   public async validateSubmission(): Promise<boolean> {
-    // 轮询检查最多 2.5 秒，确认停止按钮出现或输入框被清空
     for (let i = 0; i < 5; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
@@ -188,15 +181,6 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
         if (val.trim().length === 0) return true;
       }
-    }
-    const input = this.findInputElement();
-    if (input) {
-      input.focus();
-      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
-      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
-      await this.sleep(200);
     }
     return true;
   }

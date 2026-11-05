@@ -56,6 +56,9 @@ export default defineContentScript({
             await qwenAdapter.createNewChat();
           }
 
+          // 确保模型切换为 Qwen3.8-Max
+          await qwenAdapter.switchModel('3.8-Max');
+
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'Qwen', jobId, status: 'SENDING' },

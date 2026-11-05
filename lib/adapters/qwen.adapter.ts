@@ -74,7 +74,7 @@ export class QwenAdapter implements AISiteAdapter {
   public async createNewChat(): Promise<void> {
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button[class*="new-chat"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"], a[href="/"]'
+        'button[class*="new-chat"], div[class*="new-chat-btn"], button[aria-label*="新会话"], button[aria-label*="开启新对话"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
@@ -85,80 +85,75 @@ export class QwenAdapter implements AISiteAdapter {
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(800);
-      if (this.hasExistingMessages()) {
-        window.location.href = 'https://chat.qwen.ai/';
-        await this.sleep(1000);
-      }
-      return;
-    }
-
-    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
-      window.location.href = 'https://chat.qwen.ai/';
-      await this.sleep(1000);
+      await this.sleep(500);
     }
   }
 
   /**
    * 自动切换模型至 Qwen 3.8 Max (或指定模型名称)
    */
-  public async switchModel(targetModel = '3.8Max'): Promise<boolean> {
+  public async switchModel(targetModel = '3.8-Max'): Promise<boolean> {
     try {
-      const lowerTarget = targetModel.toLowerCase().replace(/[\s\-_]/g, '');
+      const normalizedTarget = targetModel.toLowerCase().replace(/[\s\-_]/g, '');
 
-      // 1. 查找可能存在的模型选择触发器
+      // 1. 查找模型下拉触发器
       const triggers = Array.from(
         document.querySelectorAll<HTMLElement>(
-          'div[class*="model-select"], div[class*="modelSelect"], div[class*="model-trigger"], button[class*="model"], div[class*="current-model"], div[class*="select-model"], div[class*="model_name"], span[class*="model-name"], header div[role="button"], header button'
+          'div[class*="model"], button[class*="model"], span[class*="model"], header div[role="button"], header button, [aria-haspopup="listbox"], [aria-haspopup="menu"]'
         )
       );
 
       let trigger = triggers.find((t) => {
         const text = (t.innerText || t.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-        return text.includes('qwen') || text.includes('max') || text.includes('plus') || text.includes('3.8');
+        return text.includes('qwen') || text.includes('max') || text.includes('3.8');
       });
 
       if (!trigger) {
-        const allTopClickables = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button'));
-        trigger = allTopClickables.find(
-          (el) =>
-            ((el.innerText || '').includes('Qwen') || (el.innerText || '').includes('Max')) &&
-            el.querySelector('svg') !== null &&
-            !el.closest('form, div[class*="input"]')
-        );
+        const clickables = Array.from(document.querySelectorAll<HTMLElement>('div[role="button"], button'));
+        trigger = clickables.find((el) => {
+          const t = (el.innerText || '').toLowerCase();
+          return (t.includes('qwen') || t.includes('max')) && !el.closest('form, div[class*="input"]');
+        });
       }
 
       if (trigger) {
         const currentText = (trigger.innerText || trigger.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-        if (currentText.includes(lowerTarget) || currentText.includes('3.8max')) {
+        if (currentText.includes(normalizedTarget) || (currentText.includes('3.8') && currentText.includes('max'))) {
           console.log('[QwenAdapter] Already on target model:', currentText);
           return true;
         }
 
         // 点击展开下拉框
         trigger.click();
-        await this.sleep(500);
+        await this.sleep(600);
 
         // 在弹出的下拉浮层中寻找匹配项
-        const menuItems = Array.from(
+        const options = Array.from(
           document.querySelectorAll<HTMLElement>(
-            'div[class*="dropdown"] *, div[class*="popover"] *, div[role="menuitem"], div[class*="item"], div[class*="model-option"], div[class*="select-item"]'
+            'div[class*="dropdown"] *, div[class*="popover"] *, div[role="option"], div[role="menuitem"], div[class*="select-item"], div[class*="model-item"], div[class*="menu-item"]'
           )
         );
 
-        const match = menuItems.find((el) => {
+        let match = options.find((el) => {
           const t = (el.innerText || el.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-          return t.includes(lowerTarget) || t.includes('3.8max') || (t.includes('3.8') && t.includes('max'));
+          return t.includes('3.8') && t.includes('max');
         });
+
+        if (!match) {
+          match = options.find((el) => {
+            const t = (el.innerText || el.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
+            return t.includes('max') && !t.includes('mini');
+          });
+        }
 
         if (match) {
           match.click();
           await this.sleep(400);
           console.log('[QwenAdapter] Successfully switched model to:', match.innerText);
           return true;
-        } else {
-          document.body.click();
         }
+
+        document.body.click();
       }
     } catch (e) {
       console.warn('[QwenAdapter] switchModel error:', e);
@@ -171,8 +166,8 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   public async sendPrompt(prompt: string): Promise<boolean> {
-    // 1. 尝试先切换至指定 Qwen3.8Max 模型
-    await this.switchModel('3.8Max');
+    // 1. 尝试先切换至指定 Qwen3.8-Max 模型
+    await this.switchModel('3.8-Max');
 
     this.recordBaseline();
 
@@ -190,11 +185,11 @@ export class QwenAdapter implements AISiteAdapter {
     if (sendBtn && !isDisabled) {
       sendBtn.click();
       sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-      await this.sleep(250);
+      await this.sleep(300);
     }
 
-    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
-    if (currentVal.trim().length > 0) {
+    // 始终派发 Enter 保底
+    if (!this.findStopButton()) {
       const eventInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',

@@ -82,17 +82,7 @@ export class WenxinAdapter implements AISiteAdapter {
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(800);
-      if (this.hasExistingMessages()) {
-        window.location.href = 'https://yiyan.baidu.com/';
-        await this.sleep(1000);
-      }
-      return;
-    }
-
-    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
-      window.location.href = 'https://yiyan.baidu.com/';
-      await this.sleep(1000);
+      await this.sleep(500);
     }
   }
 

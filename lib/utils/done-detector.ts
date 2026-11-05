@@ -45,9 +45,13 @@ export class QuadSignalDoneDetector {
       characterData: true,
     });
 
-    // 2. 轮询检查按钮状态（防止极端情况下 mutation 丢失）
+    // 2. 轮询检查按钮状态与内容快照（双重兜底，防止极端情况下 DOM Mutation 漏报）
     this.pollInterval = window.setInterval(() => {
       if (this.isCompleted) return;
+      const current = this.options.getCurrentContent();
+      if (current.trim().length > 0) {
+        this.options.onUpdate(current);
+      }
       this.checkSignals();
     }, 500);
   }

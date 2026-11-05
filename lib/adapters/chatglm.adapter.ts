@@ -80,17 +80,7 @@ export class ChatGLMAdapter implements AISiteAdapter {
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(800);
-      if (this.hasExistingMessages()) {
-        window.location.href = 'https://chatglm.cn/main/gchat';
-        await this.sleep(1000);
-      }
-      return;
-    }
-
-    if (window.location.pathname !== '/main/gchat' || this.hasExistingMessages()) {
-      window.location.href = 'https://chatglm.cn/main/gchat';
-      await this.sleep(1000);
+      await this.sleep(500);
     }
   }
 

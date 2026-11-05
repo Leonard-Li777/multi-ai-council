@@ -94,19 +94,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(800);
-      // 若点击后依然存在旧消息，强行导航回根路径
-      if (this.hasExistingMessages()) {
-        window.location.href = 'https://chat.deepseek.com/';
-        await this.sleep(1000);
-      }
-      return;
-    }
-
-    // 2. 降级：若在历史会话子路径或当前仍存在旧对话，导航至根路径彻底刷新
-    if (window.location.pathname !== '/' || this.hasExistingMessages()) {
-      window.location.href = 'https://chat.deepseek.com/';
-      await this.sleep(1000);
+      await this.sleep(500);
     }
   }
 
