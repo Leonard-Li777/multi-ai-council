@@ -436,13 +436,26 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    const msgs = Array.from(
+    // 1. 查找所有机器人轮次外层卡片（包含整个回答的所有 Markdown 段落与代码块）
+    const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="assistant-message"], div[class*="message-assistant"], div.qwen-markdown, div[class*="markdown"]'
+        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="user"])'
       )
     );
-    if (msgs.length === 0) return null;
-    return msgs[msgs.length - 1] ?? null;
+    if (turns.length > 0) {
+      const lastTurn = turns[turns.length - 1]!;
+      // 优先在该轮次内部寻找主内容容器，若无则直接返回整张卡片由 domToMarkdown 统一提取全文
+      const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="content"], div[class*="markdown-body"], div.qwen-markdown');
+      return contentEl || lastTurn;
+    }
+
+    // 2. 降级：查找全量 qwen-markdown 容器中的最外层父容器
+    const mdBodies = Array.from(document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]'));
+    if (mdBodies.length > 0) {
+      return mdBodies[mdBodies.length - 1] ?? null;
+    }
+
+    return null;
   }
 
   private sleep(ms: number): Promise<void> {

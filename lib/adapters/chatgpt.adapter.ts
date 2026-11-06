@@ -88,6 +88,11 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 开启新会话
    */
   public async createNewChat(): Promise<void> {
+    // 若当前已经是根路径，本身即为全新会话，无需触发导航
+    if (window.location.pathname === '/' || window.location.pathname === '') {
+      return;
+    }
+
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
         'button, a, div[role="button"], span[role="button"]'
@@ -100,14 +105,14 @@ export class ChatGPTAdapter implements AISiteAdapter {
       const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
       const testid = (el.getAttribute('data-testid') || '').toLowerCase();
       return (
+        testid.includes('create-new-chat') ||
         testid.includes('new-chat') ||
-        text.includes('new chat') ||
-        text.includes('新聊天') ||
-        text.includes('新对话') ||
+        text === 'new chat' ||
+        text === '新聊天' ||
+        text === '新对话' ||
         aria.includes('new chat') ||
         aria.includes('新聊天') ||
-        aria.includes('新对话') ||
-        (el instanceof HTMLAnchorElement && el.getAttribute('href') === '/')
+        aria.includes('新对话')
       );
     });
 
@@ -130,26 +135,48 @@ export class ChatGPTAdapter implements AISiteAdapter {
   public async sendPrompt(prompt: string): Promise<boolean> {
     this.recordBaseline();
 
-    const input = this.findInputElement();
+    // 1. 轮询等待输入框真正挂载并就绪 (最多等待 8 秒)
+    let input: HTMLElement | null = null;
+    for (let i = 0; i < 40; i++) {
+      input = this.findInputElement();
+      if (input && input.isConnected) break;
+      await this.sleep(200);
+    }
+
     if (!input) {
-      console.error('[ChatGPTAdapter] Input element not found');
+      console.error('[ChatGPTAdapter] Input element not found after polling');
       return false;
     }
 
-    // 1. 模拟写入 ProseMirror 富文本
-    const injected = await simulateTextInput(input, prompt);
-    if (!injected) {
-      console.error('[ChatGPTAdapter] Failed to inject prompt text into ProseMirror');
-      return false;
-    }
-
-    // 激活 ProseMirror 内部 Transaction 状态同步
+    // 2. 模拟写入 ProseMirror 富文本 (支持直接更新 ProseMirror 内部 <p> 标签并派发全套事件)
     input.focus();
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: '' }));
+    let injected = false;
+    try {
+      injected = await simulateTextInput(input, prompt);
+    } catch {}
 
-    // 2. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 2.5 秒)
+    // 若富文本模拟写入未生效或为空，执行 ProseMirror DOM 树强力注入保底
+    const currentText = input.textContent || '';
+    if (!injected || currentText.trim().length === 0) {
+      let p = input.querySelector('p');
+      if (!p) {
+        p = document.createElement('p');
+        input.innerHTML = '';
+        input.appendChild(p);
+      }
+      p.textContent = prompt;
+      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      injected = true;
+    }
+
+    await this.sleep(300);
+
+    // 3. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 3 秒)
     let clicked = false;
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < 15; attempt++) {
       await this.sleep(200);
 
       // 若已经出现真正的停止按钮，说明已成功进入生成
@@ -167,8 +194,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
           clicked = true;
           await this.sleep(300);
           break;
-        } else if (attempt >= 4) {
-          // 若 800ms 后依然 aria-disabled，强行解除限制并触发点击
+        } else if (attempt >= 3) {
+          // 若 600ms 后依然 aria-disabled，强行解除限制并触发点击
           sendBtn.removeAttribute('disabled');
           sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
@@ -179,9 +206,10 @@ export class ChatGPTAdapter implements AISiteAdapter {
       }
     }
 
-    // 3. 若按钮未成功触发，执行 Enter 键盘与 form 降级保底
-    if (!clicked && !this.findStopButton()) {
-      const eventInit: KeyboardEventInit = {
+    // 4. 强力按键保底：派发真正的 Enter 键盘事件（ProseMirror 最可靠提交方式）
+    if (!this.findStopButton()) {
+      input.focus();
+      const enterInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',
         keyCode: 13,
@@ -190,21 +218,10 @@ export class ChatGPTAdapter implements AISiteAdapter {
         cancelable: true,
         composed: true,
       };
-      input.focus();
-      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keydown', enterInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', enterInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', enterInit));
       await this.sleep(300);
-
-      const form = input.closest('form');
-      if (form && !this.findStopButton()) {
-        try {
-          form.requestSubmit();
-          await this.sleep(300);
-        } catch {
-          // 忽略
-        }
-      }
     }
 
     return true;

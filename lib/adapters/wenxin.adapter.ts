@@ -96,7 +96,13 @@ export class WenxinAdapter implements AISiteAdapter {
   public async sendPrompt(prompt: string): Promise<boolean> {
     this.recordBaseline();
 
-    const input = this.findInputElement();
+    // 1. 轮询等待输入框挂载就绪 (最多等待 8 秒)
+    let input: HTMLElement | null = null;
+    for (let i = 0; i < 40; i++) {
+      input = this.findInputElement();
+      if (input && input.isConnected) break;
+      await this.sleep(200);
+    }
     if (!input) return false;
 
     const injected = await simulateTextInput(input, prompt);
@@ -177,15 +183,21 @@ export class WenxinAdapter implements AISiteAdapter {
           lastMsgEl.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
         } catch {}
 
+        const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         if (lastMsgEl === this.baselineLastElement) {
-          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
-          if (currentText === this.baselineLastContent) {
+          if (currentText.length <= this.baselineLastContent.length) {
             return '';
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        let result = currentText;
+        try {
+          const md = domToMarkdown(lastMsgEl);
+          if (md && md.trim().length > 0) {
+            result = md;
+          }
+        } catch {}
+
         this.currentSnapshot = result;
         return result;
       },

@@ -26,12 +26,16 @@ export default defineContentScript({
     const handleIncomingMessage = async (msg: PortMessage) => {
       if (msg.type === 'DISPATCH_PROMPT' && msg.payload.siteName === 'Qwen') {
         const { jobId, prompt, isContinuation } = msg.payload;
-        if (isDispatching && lastHandledJobId === jobId) {
-          console.warn(`[QwenContent] Already dispatching Job ${jobId}, ignoring duplicate`);
-          return;
+        if (isDispatching) {
+          console.log(`[QwenContent] Preempting previous dispatch for Job ${jobId}`);
+          if (stopListening) {
+            stopListening();
+            stopListening = null;
+          }
+          networkListener?.destroy();
+          networkBridgeDestroy?.();
         }
         isDispatching = true;
-        lastHandledJobId = jobId;
         currentJobId = jobId;
 
         try {

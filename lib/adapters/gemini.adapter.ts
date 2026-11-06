@@ -172,15 +172,23 @@ export class GeminiAdapter implements AISiteAdapter {
         const lastMsgEl = this.findLatestAssistantMessageElement();
         if (!lastMsgEl) return '';
 
+        const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
         if (lastMsgEl === this.baselineLastElement) {
-          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
-          if (currentText === this.baselineLastContent) {
+          if (currentText.length <= this.baselineLastContent.length) {
             return '';
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        let result = currentText;
+        try {
+          const md = domToMarkdown(lastMsgEl);
+          if (md && md.trim().length > 0) {
+            result = md;
+          }
+        } catch {
+          // domToMarkdown 失败时降级纯文本
+        }
+
         this.currentSnapshot = result;
         return result;
       },

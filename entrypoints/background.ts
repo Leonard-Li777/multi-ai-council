@@ -666,18 +666,12 @@ export default defineBackground(() => {
     if (isReady) {
       await dispatchToSite(siteName, job.id, job.originalPrompt, job.isContinuation);
     } else {
-      // 标记为 WAITING_READY，若标签页未响应则触发重载以强制由 Chrome 自动注入 content script
+      // 标记为 WAITING_READY，静待 content script 的 CONTENT_READY 信号唤醒自动分发
       if (targetTab?.id) {
         await updateProviderRun(job.id, siteName, {
           tabId: targetTab.id,
           status: 'WAITING_READY',
         });
-        if (!isNavigating) {
-          try {
-            console.log(`[Background] Tab ${targetTab.id} not responding for ${siteName}, reloading to inject...`);
-            await chrome.tabs.reload(targetTab.id);
-          } catch {}
-        }
       }
       const updatedJob = await getActiveJob();
       broadcastJobSync(updatedJob);
