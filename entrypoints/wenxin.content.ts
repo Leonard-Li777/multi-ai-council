@@ -99,36 +99,33 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[WenxinContent] Activating DOM listener fallback');
-            stopListening = wenxinAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Wenxin', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = wenxinAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Wenxin', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Wenxin', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          const { orchestrator: wxOrch, destroy: wxBridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'Wenxin',
             jobId,
             sendFn: send,
             url: 'https://yiyan.baidu.com/eb/chat/conversation',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = wxBridgeDestroy;
-          wxOrch.dispatchPrompt(jobId, prompt);
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = wenxinAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = wenxinAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
+
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           networkListener = new NetworkListener({
             allowedOrigin: window.location.origin,
             onValidFrame: (frame) => {
-              wxOrch.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[WenxinContent] Invalid frame rejected: ${reason}`, frame.streamId);

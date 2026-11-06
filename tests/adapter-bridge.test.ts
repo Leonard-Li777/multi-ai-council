@@ -210,4 +210,84 @@ describe('AC-NL2: AdapterBridge 语义事件 → PortMessage 转换', () => {
     );
     expect(doneChange).toBeUndefined();
   });
+
+  it('双轨伴生收敛：网络层未出字时，DOM 流式更新平滑推送 (handleDomUpdate)', () => {
+    const bridge = createAdapterBridge({
+      siteName: 'Gemini',
+      jobId: 'job-gemini-stream',
+      sendFn: sendMock,
+      url: 'https://gemini.google.com/StreamGenerate',
+    });
+
+    bridge.handleDomUpdate('正在思考中...', '正在思考中...');
+
+    const updates = sentMessages.filter((msg) => msg.type === 'STREAM_UPDATE');
+    expect(updates.length).toBe(1);
+    if (updates[0] && updates[0].type === 'STREAM_UPDATE') {
+      expect(updates[0].payload.snapshot).toBe('正在思考中...');
+      expect(updates[0].payload.isFinished).toBe(false);
+    }
+  });
+
+  it('双轨伴生收敛：DOM 哨兵判定完成时，若网络层缺失内容则采纳 DOM 内容 (handleDomDone)', () => {
+    const bridge = createAdapterBridge({
+      siteName: 'Wenxin',
+      jobId: 'job-wenxin-done',
+      sendFn: sendMock,
+      url: 'https://yiyan.baidu.com/eb/chat/conversation',
+    });
+
+    // 网络层未捕获到请求（accumulatedSnapshot 为空），DOM 检测到停止按钮消失与稳定内容
+    bridge.handleDomDone('这是文心一言完整的回答内容，包含很多关键信息。', 'https://yiyan.baidu.com/c/123');
+
+    const doneChange = sentMessages.find(
+      (msg) => msg.type === 'STATUS_CHANGE' && msg.payload.status === 'DONE'
+    );
+    expect(doneChange).toBeDefined();
+    if (doneChange && doneChange.type === 'STATUS_CHANGE') {
+      expect(doneChange.payload.conversationUrl).toBe('https://yiyan.baidu.com/c/123');
+    }
+
+    const lastStreamUpdate = sentMessages.filter((msg) => msg.type === 'STREAM_UPDATE').pop();
+    expect(lastStreamUpdate).toBeDefined();
+    if (lastStreamUpdate && lastStreamUpdate.type === 'STREAM_UPDATE') {
+      expect(lastStreamUpdate.payload.isFinished).toBe(true);
+      expect(lastStreamUpdate.payload.cleaned).toContain('这是文心一言完整的回答内容');
+    }
+    expect(bridge.isCompleted()).toBe(true);
+  });
+
+  it('双轨伴生收敛：若网络层已有大段文本，DOM 完成时优先以纯净网络快照收敛', () => {
+    const bridge = createAdapterBridge({
+      siteName: 'Claude',
+      jobId: 'job-claude-priority',
+      sendFn: sendMock,
+      url: 'https://claude.ai/api/organizations/org-123/completion',
+    });
+    bridge.orchestrator.dispatchPrompt('job-claude-priority', '测试');
+
+    // 模拟网络层捕获了 100 字的高质量文本
+    const netFrame: StreamFramePayload = {
+      streamId: 'cl-net-1',
+      sequence: 1,
+      url: 'https://claude.ai/api/organizations/org-123/completion',
+      method: 'FETCH',
+      rawText: 'event: content_block_delta\ndata: {"delta":{"type":"text_delta","text":"来自网络层的纯净 Markdown 正文，长度足够长且无 DOM 复制杂音。"}}\n\n',
+      isDone: false,
+      status: 'STREAMING',
+      timestamp: Date.now(),
+    };
+    bridge.orchestrator.handleStreamFrame(netFrame);
+
+    // DOM 此时触发了 onDone（可能包含少许 DOM 噪声或等长）
+    bridge.handleDomDone('来自 DOM 的正文，可能带有复制按钮等杂音。', 'https://claude.ai/chat/1');
+
+    const lastStreamUpdate = sentMessages.filter((msg) => msg.type === 'STREAM_UPDATE').pop();
+    expect(lastStreamUpdate).toBeDefined();
+    if (lastStreamUpdate && lastStreamUpdate.type === 'STREAM_UPDATE') {
+      expect(lastStreamUpdate.payload.isFinished).toBe(true);
+      // 应该保留网络层的纯净正文
+      expect(lastStreamUpdate.payload.snapshot).toContain('来自网络层的纯净 Markdown 正文');
+    }
+  });
 });

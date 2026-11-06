@@ -192,7 +192,7 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 2500,
     });
 
     this.activeDetector.start(chatContainer);
@@ -324,14 +324,16 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有 model-response 标签（Gemini 官方组件名）
+    // 1. 查找所有 model-response 或 assistant 消息容器
     const modelResponses = Array.from(
-      document.querySelectorAll<HTMLElement>('model-response, [data-test-id*="model-response"]')
+      document.querySelectorAll<HTMLElement>(
+        'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="response-container"], div[class*="model-turn"]'
+      )
     );
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
       const contentEl = last.querySelector<HTMLElement>(
-        'message-content, div.markdown, div[class*="response-container"], div[class*="model-response-text"]'
+        'message-content, div.markdown, div[class*="markdown"], div[class*="response-container-content"], div[class*="model-response-text"]'
       );
       return contentEl || last;
     }
@@ -339,7 +341,7 @@ export class GeminiAdapter implements AISiteAdapter {
     // 2. 降级选择器
     const msgs = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'message-content, div[class*="model-response-text"], div[class*="response-container"], div.markdown'
+        'message-content, div[class*="model-response-text"], div[class*="response-container"], div.markdown, div[class*="markdown-main-panel"]'
       )
     );
     if (msgs.length === 0) return null;

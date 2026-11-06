@@ -98,36 +98,33 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[DeepSeekContent] Activating DOM listener fallback');
-            stopListening = deepSeekAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'DeepSeek', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = deepSeekAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'DeepSeek', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'DeepSeek', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          const { orchestrator: dsOrch, destroy: dsBridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'DeepSeek',
             jobId,
             sendFn: send,
             url: 'https://chat.deepseek.com/api/v0/chat/completion',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = dsBridgeDestroy;
-          dsOrch.dispatchPrompt(jobId, prompt);
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = deepSeekAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = deepSeekAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
+
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           networkListener = new NetworkListener({
             allowedOrigin: 'https://chat.deepseek.com',
             onValidFrame: (frame) => {
-              dsOrch.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[DeepSeekContent] Invalid frame rejected: ${reason}`, frame.streamId);

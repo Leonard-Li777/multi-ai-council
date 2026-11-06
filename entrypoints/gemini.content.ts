@@ -99,36 +99,33 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[GeminiContent] Activating DOM listener fallback');
-            stopListening = geminiAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = geminiAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Gemini', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          const { orchestrator: gmOrch, destroy: gmBridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'Gemini',
             jobId,
             sendFn: send,
             url: 'https://gemini.google.com/StreamGenerate',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = gmBridgeDestroy;
-          gmOrch.dispatchPrompt(jobId, prompt);
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = geminiAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = geminiAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
+
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           networkListener = new NetworkListener({
             allowedOrigin: 'https://gemini.google.com',
             onValidFrame: (frame) => {
-              gmOrch.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[GeminiContent] Invalid frame rejected: ${reason}`, frame.streamId);

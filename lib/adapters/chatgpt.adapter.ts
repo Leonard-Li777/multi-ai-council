@@ -143,10 +143,20 @@ export class ChatGPTAdapter implements AISiteAdapter {
       return false;
     }
 
+    // 激活 ProseMirror 内部 Transaction 状态同步
+    input.focus();
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: '' }));
+
     // 2. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 2.5 秒)
     let clicked = false;
     for (let attempt = 0; attempt < 12; attempt++) {
       await this.sleep(200);
+
+      // 若已经出现真正的停止按钮，说明已成功进入生成
+      if (this.findStopButton()) {
+        clicked = true;
+        break;
+      }
 
       const sendBtn = this.findSendButton();
       if (sendBtn) {
@@ -157,46 +167,46 @@ export class ChatGPTAdapter implements AISiteAdapter {
           clicked = true;
           await this.sleep(300);
           break;
+        } else if (attempt >= 4) {
+          // 若 800ms 后依然 aria-disabled，强行解除限制并触发点击
+          sendBtn.removeAttribute('disabled');
+          sendBtn.setAttribute('aria-disabled', 'false');
+          sendBtn.click();
+          clicked = true;
+          await this.sleep(300);
+          break;
         }
-      }
-
-      // 如果已经进入生成态（停止按钮出现），说明已成功触发
-      if (this.findStopButton()) {
-        clicked = true;
-        break;
       }
     }
 
-    // 3. 若按钮未解禁或未点击成功，尝试 form 提交与 Enter 降级保底
+    // 3. 若按钮未成功触发，执行 Enter 键盘与 form 降级保底
     if (!clicked && !this.findStopButton()) {
+      const eventInit: KeyboardEventInit = {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(300);
+
       const form = input.closest('form');
-      if (form) {
+      if (form && !this.findStopButton()) {
         try {
           form.requestSubmit();
-          clicked = true;
-          await this.sleep(400);
+          await this.sleep(300);
         } catch {
-          // 忽略并继续键盘模拟
+          // 忽略
         }
       }
-
-      if (!clicked && !this.findStopButton()) {
-        const eventInit: KeyboardEventInit = {
-          key: 'Enter',
-          code: 'Enter',
-          keyCode: 13,
-          which: 13,
-          bubbles: true,
-          cancelable: true,
-          composed: true,
-        };
-        input.focus();
-        input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-        input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-        input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
-        await this.sleep(300);
-      }
     }
+
     return true;
   }
 
@@ -214,11 +224,15 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const val = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
         if (val.trim().length === 0) return true;
 
-        // 若输入框仍有文本，再次主动补点一次发送按钮
+        // 若输入框仍有文本，再次主动补点一次发送按钮与 Enter
         const sendBtn = this.findSendButton();
-        if (sendBtn && !sendBtn.hasAttribute('disabled') && sendBtn.getAttribute('aria-disabled') !== 'true') {
+        if (sendBtn) {
+          sendBtn.removeAttribute('disabled');
+          sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
         }
+        input.focus();
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
       }
     }
 
@@ -392,12 +406,11 @@ export class ChatGPTAdapter implements AISiteAdapter {
     const direct = (
       document.querySelector<HTMLElement>('button[data-testid="send-button"]') ||
       document.querySelector<HTMLElement>('button[data-testid="fruitjuice-send-button"]') ||
-      document.querySelector<HTMLElement>('button[data-testid="composer-speech-button"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Send prompt"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Send message"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送提示词"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送消息"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送"]')
+      document.querySelector<HTMLElement>('button[aria-label="发送"]')
     );
     if (direct) return direct;
 
@@ -409,7 +422,14 @@ export class ChatGPTAdapter implements AISiteAdapter {
       const sendCandidate = candidates.reverse().find((b) => {
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         const testid = (b.getAttribute('data-testid') || '').toLowerCase();
-        if (aria.includes('attach') || aria.includes('voice') || aria.includes('upload') || testid.includes('voice')) {
+        if (
+          aria.includes('attach') ||
+          aria.includes('voice') ||
+          aria.includes('upload') ||
+          aria.includes('mic') ||
+          testid.includes('voice') ||
+          testid.includes('speech')
+        ) {
           return false;
         }
         return b.querySelector('svg') !== null;
@@ -426,8 +446,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
       document.querySelector<HTMLElement>('button[aria-label="Stop streaming"]') ||
       document.querySelector<HTMLElement>('button[aria-label="Stop generating"]') ||
       document.querySelector<HTMLElement>('button[aria-label="停止生成"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="停止响应"]') ||
-      document.querySelector<HTMLElement>('button[data-testid*="stop"]')
+      document.querySelector<HTMLElement>('button[aria-label="停止响应"]')
     );
   }
 

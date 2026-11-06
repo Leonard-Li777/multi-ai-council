@@ -197,7 +197,7 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 2500,
     });
 
     this.activeDetector.start(chatContainer);

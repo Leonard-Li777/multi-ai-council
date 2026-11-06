@@ -109,7 +109,7 @@ export default defineContentScript({
             return;
           }
 
-          // 6. 标记为 STREAMING 并启动双轨监听（网络层优先，DOM 降级兜底）
+          // 6. 标记为 STREAMING 并启动双轨伴生监听（网络层高速捕获 + DOM 伴生哨兵终极判定）
           send({
             type: 'STATUS_CHANGE',
             payload: { siteName: 'ChatGPT', jobId, status: 'STREAMING' },
@@ -123,40 +123,35 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[ChatGPTContent] Activating DOM listener fallback');
-            stopListening = chatGPTAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = chatGPTAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGPT', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          // 创建 AdapterBridge：StreamOrchestrator 语义事件 → PortMessage
-          const { orchestrator, destroy: bridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'ChatGPT',
             jobId,
             sendFn: send,
             url: 'https://chatgpt.com/backend-api/conversation',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = bridgeDestroy;
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = chatGPTAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = chatGPTAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
 
           // orchestrator 开始等待流（dispatchPrompt 设置 PENDING_STREAM 状态）
-          orchestrator.dispatchPrompt(jobId, prompt);
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           // 创建 NetworkListener 路由合法帧到 orchestrator
           networkListener = new NetworkListener({
             allowedOrigin: 'https://chatgpt.com',
             onValidFrame: (frame) => {
-              orchestrator.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[ChatGPTContent] Invalid frame rejected: ${reason}`, frame.streamId);

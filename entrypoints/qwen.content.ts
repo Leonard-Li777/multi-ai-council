@@ -102,36 +102,33 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[QwenContent] Activating DOM listener fallback');
-            stopListening = qwenAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = qwenAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Qwen', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          const { orchestrator: qwOrch, destroy: qwBridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'Qwen',
             jobId,
             sendFn: send,
             url: 'https://chat.qwen.ai/api/chat',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = qwBridgeDestroy;
-          qwOrch.dispatchPrompt(jobId, prompt);
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = qwenAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = qwenAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
+
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           networkListener = new NetworkListener({
             allowedOrigin: 'https://chat.qwen.ai',
             onValidFrame: (frame) => {
-              qwOrch.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[QwenContent] Invalid frame rejected: ${reason}`, frame.streamId);

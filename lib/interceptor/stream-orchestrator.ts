@@ -143,15 +143,17 @@ export class StreamOrchestrator {
         break;
 
       case 'SNAPSHOT':
-        // 全量快照模式：若新快照包含旧文本前缀则原子覆盖；若属独立分段快照（不含旧前缀）则追加，防分段覆盖
-        if (
-          this.responseSnapshot.length > 20 &&
-          event.text.length < this.responseSnapshot.length &&
-          !event.text.startsWith(this.responseSnapshot.slice(0, 20))
-        ) {
-          this.responseSnapshot += '\n' + event.text;
-        } else {
+        // 全量快照模式：
+        if (!this.responseSnapshot) {
           this.responseSnapshot = event.text;
+        } else if (event.text.startsWith(this.responseSnapshot)) {
+          // 1. 真·全量累积快照：新文本严格包含旧文本全文，原子替换
+          this.responseSnapshot = event.text;
+        } else if (this.responseSnapshot.startsWith(event.text)) {
+          // 2. 避免乱序或截断短帧覆盖更长的前期快照
+        } else {
+          // 3. 独立分段快照（如 Qwen 逐段推送）：绝不抹杀历史，按换行追加，彻底根除只剩最后一行缺陷
+          this.responseSnapshot += '\n' + event.text;
         }
         this.options.onSnapshotUpdate?.(this.responseSnapshot);
         break;

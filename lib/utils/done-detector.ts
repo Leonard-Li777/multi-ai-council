@@ -24,7 +24,7 @@ export class QuadSignalDoneDetector {
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 2500,
       ...options,
     };
   }
@@ -97,29 +97,12 @@ export class QuadSignalDoneDetector {
       return;
     }
 
-    // 信号 2：检查发送按钮是否已被禁用（若页面依然将发送按钮置灰，说明仍在后台生成/排队）
-    const sendBtn = this.options.getSendButton();
-    const isSendDisabled =
-      sendBtn !== null &&
-      (sendBtn.hasAttribute('disabled') ||
-        sendBtn.getAttribute('aria-disabled') === 'true' ||
-        sendBtn.classList.contains('disabled') ||
-        sendBtn.classList.contains('is-disabled'));
-
-    if (isSendDisabled) {
-      if (this.silenceTimer) {
-        window.clearTimeout(this.silenceTimer);
-        this.silenceTimer = null;
-      }
-      return;
-    }
-
-    // 信号 3 & 4：静默计时 + 长度稳定
+    // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= silenceThresholdMs 即判定完成）
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
-        // 再次确认内容长度稳定、非思考占位词、且非生成中
+        // 再次确认内容长度稳定、非思考占位词、且停止按钮确实不存在
         if (
           !this.isCompleted &&
           latestContent.trim().length === this.lastContentLength &&

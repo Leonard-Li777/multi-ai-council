@@ -98,36 +98,33 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
-          const startDomFallback = () => {
-            if (stopListening) return;
-            console.warn('[ChatGLMContent] Activating DOM listener fallback');
-            stopListening = chatGLMAdapter.listenGeneration(
-              (snapshot, cleaned) => {
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot, cleaned, isFinished: false } });
-              },
-              (finalCleaned) => {
-                const finalUrl = chatGLMAdapter.getConversationUrl();
-                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGLM', jobId, status: 'DONE', conversationUrl: finalUrl } });
-              }
-            );
-          };
-
-          const { orchestrator: glmOrch, destroy: glmBridgeDestroy } = createAdapterBridge({
+          // 创建 AdapterBridge：StreamOrchestrator 语义事件 + DOM 伴生哨兵 → PortMessage
+          const bridge = createAdapterBridge({
             siteName: 'ChatGLM',
             jobId,
             sendFn: send,
             url: 'https://chatglm.cn/chatglm/assistant-api/v1/chat/completion',
             prompt,
-            onDomFallback: startDomFallback,
           });
-          networkBridgeDestroy = glmBridgeDestroy;
-          glmOrch.dispatchPrompt(jobId, prompt);
+          networkBridgeDestroy = bridge.destroy;
+
+          // 核心机制：立即挂载 DOM 伴生哨兵（实时流式互补 + 终极 2.5s 静默判定收敛）
+          stopListening = chatGLMAdapter.listenGeneration(
+            (snapshot, cleaned) => {
+              bridge.handleDomUpdate(snapshot, cleaned);
+            },
+            (finalCleaned) => {
+              const finalUrl = chatGLMAdapter.getConversationUrl();
+              bridge.handleDomDone(finalCleaned, finalUrl);
+            }
+          );
+
+          bridge.orchestrator.dispatchPrompt(jobId, prompt);
 
           networkListener = new NetworkListener({
             allowedOrigin: 'https://chatglm.cn',
             onValidFrame: (frame) => {
-              glmOrch.handleStreamFrame(frame);
+              bridge.orchestrator.handleStreamFrame(frame);
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[ChatGLMContent] Invalid frame rejected: ${reason}`, frame.streamId);
