@@ -98,12 +98,28 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
+          const startDomFallback = () => {
+            if (stopListening) return;
+            console.warn('[ChatGLMContent] Activating DOM listener fallback');
+            stopListening = chatGLMAdapter.listenGeneration(
+              (snapshot, cleaned) => {
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot, cleaned, isFinished: false } });
+              },
+              (finalCleaned) => {
+                const finalUrl = chatGLMAdapter.getConversationUrl();
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGLM', jobId, status: 'DONE', conversationUrl: finalUrl } });
+              }
+            );
+          };
+
           const { orchestrator: glmOrch, destroy: glmBridgeDestroy } = createAdapterBridge({
             siteName: 'ChatGLM',
             jobId,
             sendFn: send,
             url: 'https://chatglm.cn/chatglm/assistant-api/v1/chat/completion',
             prompt,
+            onDomFallback: startDomFallback,
           });
           networkBridgeDestroy = glmBridgeDestroy;
           glmOrch.dispatchPrompt(jobId, prompt);
@@ -112,19 +128,6 @@ export default defineContentScript({
             allowedOrigin: 'https://chatglm.cn',
             onValidFrame: (frame) => {
               glmOrch.handleStreamFrame(frame);
-              if (glmOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
-                console.warn('[ChatGLMContent] Network layer fallback → DOM listener activated');
-                stopListening = chatGLMAdapter.listenGeneration(
-                  (snapshot, cleaned) => {
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot, cleaned, isFinished: false } });
-                  },
-                  (finalCleaned) => {
-                    const finalUrl = chatGLMAdapter.getConversationUrl();
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGLM', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGLM', jobId, status: 'DONE', conversationUrl: finalUrl } });
-                  }
-                );
-              }
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[ChatGLMContent] Invalid frame rejected: ${reason}`, frame.streamId);

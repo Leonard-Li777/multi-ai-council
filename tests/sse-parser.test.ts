@@ -74,4 +74,18 @@ describe('AC3: IncrementalSSEParser 规范与零丢包分帧', () => {
     expect(events[0]?.event).toBe('message_stop');
     expect(events[0]?.data).toBe('');
   });
+
+  it('流 EOF 时末尾无 \\n\\n 结尾的残包经 flush() 完整释放，解决丢失最后两句缺陷', () => {
+    const events: SSEEvent[] = [];
+    const parser = new IncrementalSSEParser((evt) => events.push(evt));
+
+    // 输入无结尾双换行的最后两句
+    parser.feed('data: {"delta":{"text":"这是最后两句内容。"}}');
+    expect(events).toHaveLength(0); // 此时因缺少换行还卡在 buffer
+
+    // 流 EOF 时调用 flush
+    parser.flush();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data).toBe('{"delta":{"text":"这是最后两句内容。"}}');
+  });
 });

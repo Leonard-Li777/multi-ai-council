@@ -12,6 +12,10 @@ export interface AdapterBridgeOptions {
   url: string;
   /** 用户 Prompt（可选，供 Gemini 解包器排除回显） */
   prompt?: string;
+  /** 网络流未命中、15s 超时或异常时触发的 DOM 兜底回调 */
+  onDomFallback?: () => void;
+  /** 检查当前 DOM 是否已有回答内容的判断函数 (可选) */
+  checkDomHasContent?: () => boolean;
 }
 
 export interface AdapterBridgeResult {
@@ -27,19 +31,27 @@ export interface AdapterBridgeResult {
  * 将 StreamOrchestrator 派发的高层语义事件（SNAPSHOT / DELTA / DONE / PARTIAL / ERROR）
  * 翻译为 Content Script 现有 PortMessage 契约（STREAM_UPDATE / STATUS_CHANGE），
  * 实现网络层与 Background/Side Panel 通信层的解耦。
- *
- * 用法：
- *   const { orchestrator } = createAdapterBridge({ siteName, jobId, sendFn, url });
- *   orchestrator.dispatchPrompt(jobId, prompt);
- *   // 然后把收到的 StreamFramePayload 喂给 orchestrator.handleStreamFrame(frame)
  */
 export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridgeResult {
-  const { siteName, jobId, sendFn, url, prompt = '' } = options;
+  const { siteName, jobId, sendFn, url, prompt = '', onDomFallback, checkDomHasContent } = options;
 
   // 累计快照（配合 DELTA 增量模式），保证 STREAM_UPDATE 始终带完整文本
   let accumulatedSnapshot = '';
+  let fallbackTriggered = false;
+
+  const triggerFallbackOnce = (reason: string) => {
+    if (fallbackTriggered) return;
+    fallbackTriggered = true;
+    console.warn(`[AdapterBridge:${siteName}] Triggering DOM fallback, reason: ${reason}`);
+    onDomFallback?.();
+  };
 
   const orchestrator = new StreamOrchestrator({
+    onResumeDom: () => {
+      triggerFallbackOnce('onResumeDom called from orchestrator');
+    },
+    checkDomHasContent,
+
     onSnapshotUpdate: (text: string) => {
       accumulatedSnapshot = text;
       const { cleaned } = stripThinkBlocks(text);
@@ -57,9 +69,19 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
 
     onStateChange: (state) => {
       switch (state) {
+        case 'DOM_FALLBACK': {
+          triggerFallbackOnce('state transitioned to DOM_FALLBACK');
+          break;
+        }
+
         case 'DONE': {
+          // 关键防空门禁：若网络层虽已 DONE 但提取的正文为空（如 DeepSeek/Wenxin 字段漂移），立即回退 DOM
+          if (accumulatedSnapshot.trim().length === 0) {
+            triggerFallbackOnce('network stream finished with empty content');
+            return;
+          }
+
           const { cleaned } = stripThinkBlocks(accumulatedSnapshot);
-          // 先发 isFinished: true 的 STREAM_UPDATE，再发状态变更
           sendFn({
             type: 'STREAM_UPDATE',
             payload: {
@@ -86,33 +108,23 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
         }
 
         case 'ERROR': {
-          sendFn({
-            type: 'STATUS_CHANGE',
-            payload: {
-              siteName,
-              jobId,
-              status: 'FAILED',
-              errorReason: '网络层解析异常（StreamOrchestrator ERROR 态）',
-            },
-          });
+          // 发生错误时优先尝试 DOM 兜底，绝不提前让任务死锁
+          triggerFallbackOnce('network error occurred');
           break;
         }
 
-        // IDLE / PENDING_STREAM / STREAMING / DOM_FALLBACK 无需发消息
         default:
           break;
       }
     },
   });
 
-  // 重置快照（以防复用）
-  accumulatedSnapshot = '';
-
   return {
     orchestrator,
     destroy: () => {
       orchestrator.reset();
       accumulatedSnapshot = '';
+      fallbackTriggered = false;
     },
   };
 }

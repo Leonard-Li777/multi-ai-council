@@ -244,4 +244,38 @@ describe('AC5, AC6, AC7: 双轨因果状态机与语义流编排 (StreamOrchestr
     expect(orchestrator.getState()).toBe('DOM_FALLBACK');
     expect(resumeDomSpy).toHaveBeenCalled();
   });
+
+  it('防覆盖安全机制：若收到独立分段快照（不含旧前缀），按段落追加而非擦除历史只剩最后一行', () => {
+    const orchestrator = new StreamOrchestrator();
+    orchestrator.dispatchPrompt('task-qwen', '长文提问');
+
+    // 第 1 段长快照 (ChatGPT/Qwen)
+    orchestrator.handleStreamFrame({
+      streamId: 'stream-snap-1',
+      sequence: 1,
+      url: 'https://chatgpt.com/backend-api/conversation',
+      method: 'FETCH',
+      rawText: 'data: {"message":{"author":{"role":"assistant"},"content":{"parts":["第一段非常详尽的长篇解答，包含丰富的论据和推导过程。"]}}}\n\n',
+      isDone: false,
+      status: 'STREAMING',
+      timestamp: Date.now(),
+    });
+    expect(orchestrator.getResponseSnapshot()).toContain('第一段非常详尽');
+
+    // 第 2 段独立分段快照（短，不以第一段开头）
+    orchestrator.handleStreamFrame({
+      streamId: 'stream-snap-1',
+      sequence: 2,
+      url: 'https://chatgpt.com/backend-api/conversation',
+      method: 'FETCH',
+      rawText: 'data: {"message":{"author":{"role":"assistant"},"content":{"parts":["第二段总结：结论成立。"]}}}\n\n',
+      isDone: false,
+      status: 'STREAMING',
+      timestamp: Date.now(),
+    });
+
+    // 关键断言：第一段保留，第二段追加，绝未被抹去只剩最后一行！
+    expect(orchestrator.getResponseSnapshot()).toContain('第一段非常详尽');
+    expect(orchestrator.getResponseSnapshot()).toContain('第二段总结：结论成立。');
+  });
 });

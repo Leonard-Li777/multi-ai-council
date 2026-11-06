@@ -66,6 +66,30 @@ describe('AC4: DeepSeek R1 思考过程与正文管道分离解析', () => {
     expect(parser.getReasoningText()).toBe('思考完成。');
   });
 
+  it('兼容 Web 端可能出现的 delta.text、choice.text、json.content 等多样化字段', () => {
+    const parser = new DeepSeekStreamParser();
+
+    const f1 = parser.parseEvent({
+      data: JSON.stringify({ choices: [{ delta: { text: '兼容字段1 ' } }] }),
+    });
+    expect(f1?.kind).toBe('CONTENT');
+    expect(f1?.text).toBe('兼容字段1 ');
+
+    const f2 = parser.parseEvent({
+      data: JSON.stringify({ choices: [{ text: '兼容字段2 ' }] }),
+    });
+    expect(f2?.kind).toBe('CONTENT');
+    expect(f2?.text).toBe('兼容字段2 ');
+
+    const f3 = parser.parseEvent({
+      data: JSON.stringify({ content: '兼容字段3' }),
+    });
+    expect(f3?.kind).toBe('CONTENT');
+    expect(f3?.text).toBe('兼容字段3');
+
+    expect(parser.getContentText()).toBe('兼容字段1 兼容字段2 兼容字段3');
+  });
+
   it('遇到 finish_reason 标记完成', () => {
     const parser = new DeepSeekStreamParser();
     const doneFrame = parser.parseEvent({

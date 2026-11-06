@@ -102,12 +102,28 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
+          const startDomFallback = () => {
+            if (stopListening) return;
+            console.warn('[QwenContent] Activating DOM listener fallback');
+            stopListening = qwenAdapter.listenGeneration(
+              (snapshot, cleaned) => {
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot, cleaned, isFinished: false } });
+              },
+              (finalCleaned) => {
+                const finalUrl = qwenAdapter.getConversationUrl();
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Qwen', jobId, status: 'DONE', conversationUrl: finalUrl } });
+              }
+            );
+          };
+
           const { orchestrator: qwOrch, destroy: qwBridgeDestroy } = createAdapterBridge({
             siteName: 'Qwen',
             jobId,
             sendFn: send,
             url: 'https://chat.qwen.ai/api/chat',
             prompt,
+            onDomFallback: startDomFallback,
           });
           networkBridgeDestroy = qwBridgeDestroy;
           qwOrch.dispatchPrompt(jobId, prompt);
@@ -116,19 +132,6 @@ export default defineContentScript({
             allowedOrigin: 'https://chat.qwen.ai',
             onValidFrame: (frame) => {
               qwOrch.handleStreamFrame(frame);
-              if (qwOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
-                console.warn('[QwenContent] Network layer fallback → DOM listener activated');
-                stopListening = qwenAdapter.listenGeneration(
-                  (snapshot, cleaned) => {
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot, cleaned, isFinished: false } });
-                  },
-                  (finalCleaned) => {
-                    const finalUrl = qwenAdapter.getConversationUrl();
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'Qwen', jobId, status: 'DONE', conversationUrl: finalUrl } });
-                  }
-                );
-              }
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[QwenContent] Invalid frame rejected: ${reason}`, frame.streamId);

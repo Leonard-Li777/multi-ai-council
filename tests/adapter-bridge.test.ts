@@ -159,4 +159,55 @@ describe('AC-NL2: AdapterBridge 语义事件 → PortMessage 转换', () => {
     orchestrator.dispatchPrompt('job-gemini', '测试');
     expect(orchestrator.getState()).toBe('PENDING_STREAM');
   });
+
+  it('15s 超时未捕获到流时，AdapterBridge 自动激活 onDomFallback 回调', () => {
+    const fallbackSpy = vi.fn();
+    const { orchestrator } = createAdapterBridge({
+      siteName: 'Wenxin',
+      jobId: 'job-wenxin',
+      sendFn: sendMock,
+      url: 'https://yiyan.baidu.com/eb/chat/conversation',
+      onDomFallback: fallbackSpy,
+    });
+
+    orchestrator.dispatchPrompt('job-wenxin', '测试');
+    expect(fallbackSpy).not.toHaveBeenCalled();
+
+    // 15 秒过去，未收到任何网络流
+    vi.advanceTimersByTime(15_000);
+    expect(fallbackSpy).toHaveBeenCalledOnce();
+  });
+
+  it('网络流 DONE 但正文提取为空时（如字段漂移），防空门禁自动触发 onDomFallback', () => {
+    const fallbackSpy = vi.fn();
+    const { orchestrator } = createAdapterBridge({
+      siteName: 'DeepSeek',
+      jobId: 'job-ds-empty',
+      sendFn: sendMock,
+      url: 'https://chat.deepseek.com/api/v0/chat/completion',
+      onDomFallback: fallbackSpy,
+    });
+
+    orchestrator.dispatchPrompt('job-ds-empty', '测试');
+
+    // 收到一个空内容的流结束帧
+    const emptyDoneFrame: StreamFramePayload = {
+      streamId: 'ds-empty-stream',
+      sequence: 1,
+      url: 'https://chat.deepseek.com/api/v0/chat/completion',
+      method: 'FETCH',
+      rawText: 'data: [DONE]\n\n',
+      isDone: true,
+      status: 'DONE',
+      timestamp: Date.now(),
+    };
+    orchestrator.handleStreamFrame(emptyDoneFrame);
+
+    // 防空门禁生效：不派发空的 DONE，而是触发 onDomFallback 尝试 DOM 恢复
+    expect(fallbackSpy).toHaveBeenCalledOnce();
+    const doneChange = sentMessages.find(
+      (msg) => msg.type === 'STATUS_CHANGE' && msg.payload.status === 'DONE'
+    );
+    expect(doneChange).toBeUndefined();
+  });
 });

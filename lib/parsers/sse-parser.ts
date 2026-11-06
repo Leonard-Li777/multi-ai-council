@@ -58,6 +58,16 @@ export class IncrementalSSEParser {
   }
 
   /**
+   * 刷新并清空缓冲区中的剩余未完结事件（解决流 EOF 时最后未接双换行的残帧被丢弃问题）
+   */
+  public flush(): void {
+    if (this.buffer.trim().length > 0) {
+      this.parseBlock(this.buffer);
+    }
+    this.buffer = '';
+  }
+
+  /**
    * 查找事件块终止符 (\n\n, \r\n\r\n, 或 \r\r)
    */
   private findEventDelimiter(start: number): { blockEnd: number; nextStart: number } | null {

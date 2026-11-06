@@ -33,7 +33,7 @@ export class StreamOrchestrator {
   private activeStreamId: string | null = null;
   private responseSnapshot = '';
   private ttftTimer: number | null = null;
-  private readonly TTFT_TIMEOUT_MS = 15_000; // 15秒抗高峰 TTFT
+  private readonly TTFT_TIMEOUT_MS = 15_000; // 15秒抗高峰 TTFT（Spec 标准时间窗口）
   private activeParser?: UnifiedSemanticStreamParser;
 
   private options: StreamOrchestratorOptions;
@@ -143,8 +143,16 @@ export class StreamOrchestrator {
         break;
 
       case 'SNAPSHOT':
-        // 全量快照模式：原子替换缓冲区
-        this.responseSnapshot = event.text;
+        // 全量快照模式：若新快照包含旧文本前缀则原子覆盖；若属独立分段快照（不含旧前缀）则追加，防分段覆盖
+        if (
+          this.responseSnapshot.length > 20 &&
+          event.text.length < this.responseSnapshot.length &&
+          !event.text.startsWith(this.responseSnapshot.slice(0, 20))
+        ) {
+          this.responseSnapshot += '\n' + event.text;
+        } else {
+          this.responseSnapshot = event.text;
+        }
         this.options.onSnapshotUpdate?.(this.responseSnapshot);
         break;
 

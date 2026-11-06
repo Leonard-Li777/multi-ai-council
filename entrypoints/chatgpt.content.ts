@@ -123,6 +123,21 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
+          const startDomFallback = () => {
+            if (stopListening) return;
+            console.warn('[ChatGPTContent] Activating DOM listener fallback');
+            stopListening = chatGPTAdapter.listenGeneration(
+              (snapshot, cleaned) => {
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot, cleaned, isFinished: false } });
+              },
+              (finalCleaned) => {
+                const finalUrl = chatGPTAdapter.getConversationUrl();
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGPT', jobId, status: 'DONE', conversationUrl: finalUrl } });
+              }
+            );
+          };
+
           // 创建 AdapterBridge：StreamOrchestrator 语义事件 → PortMessage
           const { orchestrator, destroy: bridgeDestroy } = createAdapterBridge({
             siteName: 'ChatGPT',
@@ -130,6 +145,7 @@ export default defineContentScript({
             sendFn: send,
             url: 'https://chatgpt.com/backend-api/conversation',
             prompt,
+            onDomFallback: startDomFallback,
           });
           networkBridgeDestroy = bridgeDestroy;
 
@@ -141,21 +157,6 @@ export default defineContentScript({
             allowedOrigin: 'https://chatgpt.com',
             onValidFrame: (frame) => {
               orchestrator.handleStreamFrame(frame);
-
-              // DOM_FALLBACK：网络层超时或异常时降级到 DOM 监听
-              if (orchestrator.getState() === 'DOM_FALLBACK' && !stopListening) {
-                console.warn('[ChatGPTContent] Network layer fallback → DOM listener activated');
-                stopListening = chatGPTAdapter.listenGeneration(
-                  (snapshot, cleaned) => {
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot, cleaned, isFinished: false } });
-                  },
-                  (finalCleaned) => {
-                    const finalUrl = chatGPTAdapter.getConversationUrl();
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'ChatGPT', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'ChatGPT', jobId, status: 'DONE', conversationUrl: finalUrl } });
-                  }
-                );
-              }
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[ChatGPTContent] Invalid frame rejected: ${reason}`, frame.streamId);

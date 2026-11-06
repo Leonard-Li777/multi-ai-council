@@ -143,24 +143,44 @@ export class ChatGPTAdapter implements AISiteAdapter {
       return false;
     }
 
-    // 等待 React / ProseMirror 状态同步与按钮解禁
-    await this.sleep(400);
-
-    // 2. 寻找发送按钮并触发点击
-    const sendBtn = this.findSendButton();
-    const isAriaDisabled = sendBtn?.getAttribute('aria-disabled') === 'true';
-    const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
+    // 2. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 2.5 秒)
     let clicked = false;
-    if (sendBtn && !isDisabled) {
-      sendBtn.click();
-      clicked = true;
-      await this.sleep(400);
+    for (let attempt = 0; attempt < 12; attempt++) {
+      await this.sleep(200);
+
+      const sendBtn = this.findSendButton();
+      if (sendBtn) {
+        const isAriaDisabled = sendBtn.getAttribute('aria-disabled') === 'true';
+        const isDisabled = sendBtn.hasAttribute('disabled') || isAriaDisabled;
+        if (!isDisabled) {
+          sendBtn.click();
+          clicked = true;
+          await this.sleep(300);
+          break;
+        }
+      }
+
+      // 如果已经进入生成态（停止按钮出现），说明已成功触发
+      if (this.findStopButton()) {
+        clicked = true;
+        break;
+      }
     }
 
-    // 3. 仅当未点击成功且未进入停止生成状态时，才尝试 Enter 降级保底（防止重复提交两次）
+    // 3. 若按钮未解禁或未点击成功，尝试 form 提交与 Enter 降级保底
     if (!clicked && !this.findStopButton()) {
-      const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
-      if (currentVal.trim().length > 0) {
+      const form = input.closest('form');
+      if (form) {
+        try {
+          form.requestSubmit();
+          clicked = true;
+          await this.sleep(400);
+        } catch {
+          // 忽略并继续键盘模拟
+        }
+      }
+
+      if (!clicked && !this.findStopButton()) {
         const eventInit: KeyboardEventInit = {
           key: 'Enter',
           code: 'Enter',
@@ -174,6 +194,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
         input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
         input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+        await this.sleep(300);
       }
     }
     return true;
@@ -183,18 +204,37 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 验证消息是否提交成功
    */
   public async validateSubmission(): Promise<boolean> {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 8; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) return true;
 
       const input = this.findInputElement();
       if (input) {
-        const val = input instanceof HTMLTextAreaElement ? input.value : input.innerText;
+        const val = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
         if (val.trim().length === 0) return true;
+
+        // 若输入框仍有文本，再次主动补点一次发送按钮
+        const sendBtn = this.findSendButton();
+        if (sendBtn && !sendBtn.hasAttribute('disabled') && sendBtn.getAttribute('aria-disabled') !== 'true') {
+          sendBtn.click();
+        }
       }
     }
-    return true;
+
+    // 最终检查：若依然有 stop 按钮则判定成功
+    if (this.findStopButton()) return true;
+
+    // 若输入框已被清空也判定成功
+    const finalInput = this.findInputElement();
+    if (finalInput) {
+      const val = finalInput instanceof HTMLTextAreaElement ? finalInput.value : (finalInput.innerText || finalInput.textContent || '');
+      if (val.trim().length === 0) return true;
+    }
+
+    // 严格门禁：未清空输入框且无停止按钮，明确返回 false 杜绝谎报成功
+    console.warn('[ChatGPTAdapter] Validation failed: Prompt still in input and no stop button');
+    return false;
   }
 
   /**
@@ -349,15 +389,35 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    return (
+    const direct = (
       document.querySelector<HTMLElement>('button[data-testid="send-button"]') ||
       document.querySelector<HTMLElement>('button[data-testid="fruitjuice-send-button"]') ||
+      document.querySelector<HTMLElement>('button[data-testid="composer-speech-button"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Send prompt"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Send message"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送提示词"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送消息"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="发送"]')
     );
+    if (direct) return direct;
+
+    // 向上从输入框的父级表单中寻找操作按钮
+    const input = this.findInputElement();
+    const form = input?.closest('form');
+    if (form) {
+      const candidates = Array.from(form.querySelectorAll<HTMLElement>('button'));
+      const sendCandidate = candidates.reverse().find((b) => {
+        const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const testid = (b.getAttribute('data-testid') || '').toLowerCase();
+        if (aria.includes('attach') || aria.includes('voice') || aria.includes('upload') || testid.includes('voice')) {
+          return false;
+        }
+        return b.querySelector('svg') !== null;
+      });
+      if (sendCandidate) return sendCandidate;
+    }
+
+    return null;
   }
 
   private findStopButton(): HTMLElement | null {

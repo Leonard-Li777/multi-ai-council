@@ -141,6 +141,8 @@ export class UnifiedSemanticStreamParser {
       this.sseParser.feed(rawText);
     }
     if (isDone) {
+      // 解决 Claude 等流 EOF 时末尾残帧未满双换行导致丢失问题
+      this.sseParser?.flush();
       this.onEvent({ type: 'DONE', endReason: 'EOF' });
     }
   }

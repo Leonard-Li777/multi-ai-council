@@ -99,12 +99,28 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
+          const startDomFallback = () => {
+            if (stopListening) return;
+            console.warn('[GeminiContent] Activating DOM listener fallback');
+            stopListening = geminiAdapter.listenGeneration(
+              (snapshot, cleaned) => {
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot, cleaned, isFinished: false } });
+              },
+              (finalCleaned) => {
+                const finalUrl = geminiAdapter.getConversationUrl();
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Gemini', jobId, status: 'DONE', conversationUrl: finalUrl } });
+              }
+            );
+          };
+
           const { orchestrator: gmOrch, destroy: gmBridgeDestroy } = createAdapterBridge({
             siteName: 'Gemini',
             jobId,
             sendFn: send,
             url: 'https://gemini.google.com/StreamGenerate',
             prompt,
+            onDomFallback: startDomFallback,
           });
           networkBridgeDestroy = gmBridgeDestroy;
           gmOrch.dispatchPrompt(jobId, prompt);
@@ -113,19 +129,6 @@ export default defineContentScript({
             allowedOrigin: 'https://gemini.google.com',
             onValidFrame: (frame) => {
               gmOrch.handleStreamFrame(frame);
-              if (gmOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
-                console.warn('[GeminiContent] Network layer fallback → DOM listener activated');
-                stopListening = geminiAdapter.listenGeneration(
-                  (snapshot, cleaned) => {
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot, cleaned, isFinished: false } });
-                  },
-                  (finalCleaned) => {
-                    const finalUrl = geminiAdapter.getConversationUrl();
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Gemini', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'Gemini', jobId, status: 'DONE', conversationUrl: finalUrl } });
-                  }
-                );
-              }
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[GeminiContent] Invalid frame rejected: ${reason}`, frame.streamId);

@@ -31,32 +31,40 @@ export class DeepSeekStreamParser {
     try {
       const json = JSON.parse(rawData);
       const choice = json.choices?.[0];
-      if (!choice) return null;
+      const delta = choice?.delta || json.delta;
 
-      const delta = choice.delta;
-
-      // 1. 深度思考阶段 (reasoning_content)
-      if (delta && typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
-        this.reasoningText += delta.reasoning_content;
+      // 1. 深度思考阶段 (reasoning_content / thinking)
+      const thinking = delta?.reasoning_content || delta?.thinking || json.reasoning_content;
+      if (typeof thinking === 'string' && thinking.length > 0) {
+        this.reasoningText += thinking;
         return {
           kind: 'THINKING',
-          text: delta.reasoning_content,
-          isDone: Boolean(choice.finish_reason),
+          text: thinking,
+          isDone: Boolean(choice?.finish_reason || json.finish_reason),
         };
       }
 
-      // 2. 正文生成阶段 (content)
-      if (delta && typeof delta.content === 'string' && delta.content.length > 0) {
-        this.contentText += delta.content;
+      // 2. 正文生成阶段 (content / text / response 广泛兼容)
+      const content =
+        (typeof delta?.content === 'string' ? delta.content : null) ??
+        (typeof delta?.text === 'string' ? delta.text : null) ??
+        (typeof choice?.text === 'string' ? choice.text : null) ??
+        (typeof json.content === 'string' ? json.content : null) ??
+        (typeof json.text === 'string' ? json.text : null) ??
+        (typeof json.response === 'string' ? json.response : null) ??
+        (typeof json.v === 'string' ? json.v : null);
+
+      if (typeof content === 'string' && content.length > 0) {
+        this.contentText += content;
         return {
           kind: 'CONTENT',
-          text: delta.content,
-          isDone: Boolean(choice.finish_reason),
+          text: content,
+          isDone: Boolean(choice?.finish_reason || json.finish_reason),
         };
       }
 
       // 3. 独立完成信号 (无新 delta)
-      if (choice.finish_reason) {
+      if (choice?.finish_reason || json.finish_reason) {
         return {
           kind: 'DONE',
           text: this.contentText,

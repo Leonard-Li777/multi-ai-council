@@ -42,37 +42,52 @@ export function parseClaudeEvent(event: SSEEvent): AdapterParseResult | null {
 }
 
 /**
- * 解析通义千问 SSE 事件 (显式区分 output.text 快照 与 delta 增量)
+ * 解析通义千问 SSE 事件 (智能自适应快照与增量模式)
  */
 export function parseQwenEvent(event: SSEEvent): AdapterParseResult | null {
   const rawData = event.data?.trim();
   if (!rawData) return null;
 
-  if (rawData === '[DONE]') {
+  if (rawData === '[DONE]' || rawData === 'DONE') {
     return { text: '', isDone: true, mode: 'DELTA' };
   }
 
   try {
     const json = JSON.parse(rawData);
 
-    // 格式 1: output.text (全量快照模式，严禁无脑累加)
+    // 网页端常见完成标记: is_end, status === 'finished', finish_reason
+    const isDone = Boolean(
+      json.is_end ||
+      json.output?.finish_reason ||
+      json.status === 'finished' ||
+      json.choices?.[0]?.finish_reason
+    );
+
+    // 提取正文文本 (广泛兼容 output.text / content / delta / choices)
+    let text = '';
+    let mode: 'SNAPSHOT' | 'DELTA' = 'DELTA';
+
     if (json.output && typeof json.output.text === 'string') {
-      return {
-        text: json.output.text,
-        isDone: Boolean(json.output.finish_reason),
-        mode: 'SNAPSHOT',
-      };
+      text = json.output.text;
+      // 仅当明确有 DashScope output 结构时按快照处理
+      mode = 'SNAPSHOT';
+    } else if (typeof json.content === 'string') {
+      text = json.content;
+      mode = 'DELTA';
+    } else if (typeof json.text === 'string') {
+      text = json.text;
+      mode = 'DELTA';
+    } else if (json.choices?.[0]) {
+      const choice = json.choices[0];
+      text = choice.delta?.content || choice.text || '';
+      mode = 'DELTA';
     }
 
-    // 格式 2: choices[0].delta.content (增量模式)
-    const choice = json.choices?.[0];
-    if (choice) {
-      const isDone = Boolean(choice.finish_reason);
-      const text = choice.delta?.content || choice.text || '';
+    if (text || isDone) {
       return {
         text,
         isDone,
-        mode: 'DELTA',
+        mode,
       };
     }
   } catch {

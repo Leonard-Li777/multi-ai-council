@@ -120,12 +120,28 @@ export default defineContentScript({
           networkListener?.destroy();
           networkBridgeDestroy?.();
 
+          const startDomFallback = () => {
+            if (stopListening) return;
+            console.warn('[ClaudeContent] Activating DOM listener fallback');
+            stopListening = claudeAdapter.listenGeneration(
+              (snapshot, cleaned) => {
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Claude', jobId, snapshot, cleaned, isFinished: false } });
+              },
+              (finalCleaned) => {
+                const finalUrl = claudeAdapter.getConversationUrl();
+                send({ type: 'STREAM_UPDATE', payload: { siteName: 'Claude', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
+                send({ type: 'STATUS_CHANGE', payload: { siteName: 'Claude', jobId, status: 'DONE', conversationUrl: finalUrl } });
+              }
+            );
+          };
+
           const { orchestrator: clOrch, destroy: clBridgeDestroy } = createAdapterBridge({
             siteName: 'Claude',
             jobId,
             sendFn: send,
             url: 'https://claude.ai/api/organizations/current/completion',
             prompt,
+            onDomFallback: startDomFallback,
           });
           networkBridgeDestroy = clBridgeDestroy;
           clOrch.dispatchPrompt(jobId, prompt);
@@ -134,19 +150,6 @@ export default defineContentScript({
             allowedOrigin: 'https://claude.ai',
             onValidFrame: (frame) => {
               clOrch.handleStreamFrame(frame);
-              if (clOrch.getState() === 'DOM_FALLBACK' && !stopListening) {
-                console.warn('[ClaudeContent] Network layer fallback → DOM listener activated');
-                stopListening = claudeAdapter.listenGeneration(
-                  (snapshot, cleaned) => {
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Claude', jobId, snapshot, cleaned, isFinished: false } });
-                  },
-                  (finalCleaned) => {
-                    const finalUrl = claudeAdapter.getConversationUrl();
-                    send({ type: 'STREAM_UPDATE', payload: { siteName: 'Claude', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true } });
-                    send({ type: 'STATUS_CHANGE', payload: { siteName: 'Claude', jobId, status: 'DONE', conversationUrl: finalUrl } });
-                  }
-                );
-              }
             },
             onInvalidFrame: (frame, reason) => {
               console.warn(`[ClaudeContent] Invalid frame rejected: ${reason}`, frame.streamId);
