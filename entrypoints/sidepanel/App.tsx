@@ -36,7 +36,9 @@ import {
   History,
   RotateCcw,
   ChevronsUpDown,
+  FileText,
 } from 'lucide-react';
+import { flightRecorder } from '../../lib/logger/flight-recorder';
 
 export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
@@ -48,6 +50,18 @@ export const App: React.FC = () => {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'prompt' | 'replies' | 'synthesis' | 'settings'>('prompt');
   const [expandedMap, setExpandedMap] = useState<Record<string, boolean>>({});
+  const [copiedLogs, setCopiedLogs] = useState(false);
+
+  const handleCopyFlightLogs = async () => {
+    try {
+      const report = await flightRecorder.exportDiagnosticReport();
+      await navigator.clipboard.writeText(report);
+      setCopiedLogs(true);
+      setTimeout(() => setCopiedLogs(false), 2000);
+    } catch (e) {
+      console.error('Failed to copy flight logs', e);
+    }
+  };
 
   const portSendRef = useRef<((msg: PortMessage) => void) | null>(null);
 
@@ -346,6 +360,24 @@ export const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1.5">
+            <button
+              onClick={handleCopyFlightLogs}
+              className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 bg-white dark:bg-slate-900 hover:bg-indigo-50 dark:hover:bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-800 transition-colors cursor-pointer shadow-2xs"
+              title="一键复制飞行记录仪诊断日志"
+            >
+              {copiedLogs ? (
+                <>
+                  <ShieldCheck className="w-3 h-3 text-emerald-500" />
+                  <span className="text-emerald-600 font-semibold">已复制</span>
+                </>
+              ) : (
+                <>
+                  <FileText className="w-3 h-3 text-indigo-500" />
+                  <span>飞行日志</span>
+                </>
+              )}
+            </button>
+
             <button
               onClick={() => setIsHistoryOpen(true)}
               className="flex items-center gap-1 text-[11px] text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 bg-white dark:bg-slate-900 hover:bg-blue-50 dark:hover:bg-slate-800 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-800 transition-colors cursor-pointer shadow-2xs"

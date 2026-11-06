@@ -6,6 +6,7 @@ import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
+import { flightRecorder } from '../logger/flight-recorder';
 
 export class GeminiAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Gemini';
@@ -188,6 +189,12 @@ export class GeminiAdapter implements AISiteAdapter {
         } catch {
           // domToMarkdown 失败时降级纯文本
         }
+
+        flightRecorder.info('Gemini', 'DOM_CONTENT_FETCHED', {
+          tag: lastMsgEl.tagName,
+          className: lastMsgEl.className,
+          textLen: result.length,
+        });
 
         this.currentSnapshot = result;
         return result;

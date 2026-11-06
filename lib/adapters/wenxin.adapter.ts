@@ -6,6 +6,7 @@ import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
+import { flightRecorder } from '../logger/flight-recorder';
 
 export class WenxinAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Wenxin';
@@ -103,10 +104,19 @@ export class WenxinAdapter implements AISiteAdapter {
       if (input && input.isConnected) break;
       await this.sleep(200);
     }
-    if (!input) return false;
+    if (!input) {
+      flightRecorder.error('Wenxin', 'INPUT_NOT_FOUND_AFTER_POLLING');
+      return false;
+    }
+
+    flightRecorder.info('Wenxin', 'INPUT_FOUND', { tag: input.tagName });
 
     const injected = await simulateTextInput(input, prompt);
-    if (!injected) return false;
+    if (!injected) {
+      flightRecorder.error('Wenxin', 'PROMPT_INJECT_FAILED');
+      return false;
+    }
+    flightRecorder.info('Wenxin', 'PROMPT_INJECT_SUCCESS', { promptLen: prompt.length });
 
     await this.sleep(350);
 
@@ -116,7 +126,10 @@ export class WenxinAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled || hasDisabledClass;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
+      flightRecorder.info('Wenxin', 'SEND_BUTTON_CLICKED');
       await this.sleep(200);
+    } else {
+      flightRecorder.warn('Wenxin', 'SEND_BUTTON_DISABLED_OR_NOT_FOUND', { exists: !!sendBtn, isDisabled });
     }
 
     const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
@@ -134,6 +147,7 @@ export class WenxinAdapter implements AISiteAdapter {
       input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
       input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
       input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      flightRecorder.info('Wenxin', 'ENTER_KEY_DISPATCHED');
     }
     return true;
   }

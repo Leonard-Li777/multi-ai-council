@@ -6,6 +6,7 @@ import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
+import { flightRecorder } from '../logger/flight-recorder';
 
 export class ChatGPTAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'ChatGPT';
@@ -144,9 +145,12 @@ export class ChatGPTAdapter implements AISiteAdapter {
     }
 
     if (!input) {
+      flightRecorder.error('ChatGPT', 'INPUT_NOT_FOUND_AFTER_POLLING');
       console.error('[ChatGPTAdapter] Input element not found after polling');
       return false;
     }
+
+    flightRecorder.info('ChatGPT', 'INPUT_FOUND', { tag: input.tagName, id: input.id });
 
     // 2. 模拟写入 ProseMirror 富文本 (支持直接更新 ProseMirror 内部 <p> 标签并派发全套事件)
     input.focus();
@@ -170,6 +174,9 @@ export class ChatGPTAdapter implements AISiteAdapter {
       input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       injected = true;
+      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_FALLBACK_TREE', { promptLength: prompt.length });
+    } else {
+      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_SUCCESS', { promptLength: prompt.length });
     }
 
     await this.sleep(300);
@@ -182,6 +189,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
       // 若已经出现真正的停止按钮，说明已成功进入生成
       if (this.findStopButton()) {
         clicked = true;
+        flightRecorder.info('ChatGPT', 'STOP_BUTTON_ALREADY_PRESENT');
         break;
       }
 
@@ -192,6 +200,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         if (!isDisabled) {
           sendBtn.click();
           clicked = true;
+          flightRecorder.info('ChatGPT', 'SEND_BUTTON_CLICKED', { attempt });
           await this.sleep(300);
           break;
         } else if (attempt >= 3) {
@@ -200,6 +209,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
           sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
           clicked = true;
+          flightRecorder.warn('ChatGPT', 'SEND_BUTTON_FORCE_CLICKED', { attempt });
           await this.sleep(300);
           break;
         }
@@ -221,6 +231,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
       input.dispatchEvent(new KeyboardEvent('keydown', enterInit));
       input.dispatchEvent(new KeyboardEvent('keypress', enterInit));
       input.dispatchEvent(new KeyboardEvent('keyup', enterInit));
+      flightRecorder.info('ChatGPT', 'ENTER_KEY_DISPATCHED');
       await this.sleep(300);
     }
 
@@ -234,12 +245,18 @@ export class ChatGPTAdapter implements AISiteAdapter {
     for (let i = 0; i < 8; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
-      if (stopBtn) return true;
+      if (stopBtn) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'STOP_BUTTON_DETECTED' });
+        return true;
+      }
 
       const input = this.findInputElement();
       if (input) {
         const val = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
-        if (val.trim().length === 0) return true;
+        if (val.trim().length === 0) {
+          flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
+          return true;
+        }
 
         // 若输入框仍有文本，再次主动补点一次发送按钮与 Enter
         const sendBtn = this.findSendButton();
@@ -254,16 +271,22 @@ export class ChatGPTAdapter implements AISiteAdapter {
     }
 
     // 最终检查：若依然有 stop 按钮则判定成功
-    if (this.findStopButton()) return true;
+    if (this.findStopButton()) {
+      flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_STOP_BUTTON_DETECTED' });
+      return true;
+    }
 
     // 若输入框已被清空也判定成功
     const finalInput = this.findInputElement();
     if (finalInput) {
       const val = finalInput instanceof HTMLTextAreaElement ? finalInput.value : (finalInput.innerText || finalInput.textContent || '');
-      if (val.trim().length === 0) return true;
+      if (val.trim().length === 0) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_INPUT_CLEARED' });
+        return true;
+      }
     }
 
-    // 严格门禁：未清空输入框且无停止按钮，明确返回 false 杜绝谎报成功
+    flightRecorder.warn('ChatGPT', 'VALIDATE_SUBMISSION_FAIL', { reason: 'PROMPT_STILL_IN_INPUT_NO_STOP' });
     console.warn('[ChatGPTAdapter] Validation failed: Prompt still in input and no stop button');
     return false;
   }

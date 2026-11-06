@@ -1,3 +1,5 @@
+import { flightRecorder } from '../logger/flight-recorder';
+
 /**
  * 四信号生成完成判定器
  * 1. 停止生成按钮消失
@@ -100,6 +102,7 @@ export class QuadSignalDoneDetector {
     // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= silenceThresholdMs 即判定完成）
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
+      flightRecorder.info('System', 'SILENCE_TIMER_START', { len: currentLen, ms: this.options.silenceThresholdMs });
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
         // 再次确认内容长度稳定、非思考占位词、且停止按钮确实不存在
@@ -109,6 +112,7 @@ export class QuadSignalDoneDetector {
           !isThinkingOnly(latestContent) &&
           !isVisible(this.options.getStopButton())
         ) {
+          flightRecorder.info('System', 'SILENCE_TIMER_TRIGGERED_DONE', { finalLen: latestContent.length });
           this.markDone(latestContent);
         } else {
           // 长度还在变动，继续等待

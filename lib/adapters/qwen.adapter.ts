@@ -6,6 +6,7 @@ import { stripThinkBlocks } from '../utils/think-block-strip';
 import { domToMarkdown } from '../utils/dom-to-markdown';
 import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
+import { flightRecorder } from '../logger/flight-recorder';
 
 export class QwenAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Qwen';
@@ -446,7 +447,13 @@ export class QwenAdapter implements AISiteAdapter {
       const lastTurn = turns[turns.length - 1]!;
       // 优先在该轮次内部寻找主内容容器，若无则直接返回整张卡片由 domToMarkdown 统一提取全文
       const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="content"], div[class*="markdown-body"], div.qwen-markdown');
-      return contentEl || lastTurn;
+      const target = contentEl || lastTurn;
+      flightRecorder.info('Qwen', 'TURN_CONTAINER_MATCHED', {
+        turnClass: lastTurn.className,
+        matchedTag: target.tagName,
+        textLen: (target.innerText || '').length,
+      });
+      return target;
     }
 
     // 2. 降级：查找全量 qwen-markdown 容器中的最外层父容器

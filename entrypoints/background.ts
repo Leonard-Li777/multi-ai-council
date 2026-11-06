@@ -21,6 +21,7 @@ import {
 } from '../lib/utils/conversation-helper';
 import { buildAnonymizedSynthesisPrompt } from '../lib/utils/synthesis-builder';
 import { calculateQuorumProgress } from '../lib/utils/quorum-calculator';
+import { flightRecorder } from '../lib/logger/flight-recorder';
 
 const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
   DeepSeek: ['https://chat.deepseek.com/*'],
@@ -728,12 +729,14 @@ export default defineBackground(() => {
     }
 
     if (dispatched) {
+      flightRecorder.info(siteName, 'DISPATCH_SUCCESS', { jobId, channel: port ? 'PORT' : 'MESSAGE' });
       // 成功派发，状态立即推进为 SENDING，消除 UI 卡死在“等待就绪”
       const updated = await updateProviderRun(jobId, siteName, {
         status: 'SENDING',
       });
       broadcastJobSync(updated);
     } else {
+      flightRecorder.warn(siteName, 'DISPATCH_WAITING', { jobId });
       console.warn(`[Background] Could not dispatch to ${siteName} immediately, waiting for ready event`);
     }
   }

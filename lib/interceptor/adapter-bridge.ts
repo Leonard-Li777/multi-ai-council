@@ -2,6 +2,7 @@ import { StreamOrchestrator } from './stream-orchestrator';
 import { stripThinkBlocks } from '../utils/think-block-strip';
 import type { SupportedSite } from '../types/review-job';
 import type { PortMessage } from '../messaging/port';
+import { flightRecorder } from '../logger/flight-recorder';
 
 export interface AdapterBridgeOptions {
   siteName: SupportedSite;
@@ -51,7 +52,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
   const triggerFallbackOnce = (reason: string) => {
     if (fallbackTriggered) return;
     fallbackTriggered = true;
-    console.warn(`[AdapterBridge:${siteName}] Triggering DOM fallback, reason: ${reason}`);
+    flightRecorder.warn(siteName, 'DOM_FALLBACK_TRIGGERED', { reason, jobId });
     onDomFallback?.();
   };
 
@@ -65,6 +66,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       if (hasCompleted) return;
       accumulatedSnapshot = text;
       const { cleaned } = stripThinkBlocks(text);
+      flightRecorder.info(siteName, 'NET_STREAM_UPDATE', { length: text.length, jobId });
       sendFn({
         type: 'STREAM_UPDATE',
         payload: {
@@ -93,6 +95,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
           }
 
           hasCompleted = true;
+          flightRecorder.info(siteName, 'NET_DONE_CONVERGED', { length: accumulatedSnapshot.length, jobId });
           const { cleaned } = stripThinkBlocks(accumulatedSnapshot);
           sendFn({
             type: 'STREAM_UPDATE',
@@ -113,6 +116,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
 
         case 'PARTIAL': {
           hasCompleted = true;
+          flightRecorder.warn(siteName, 'NET_PARTIAL_CONVERGED', { length: accumulatedSnapshot.length, jobId });
           sendFn({
             type: 'STATUS_CHANGE',
             payload: { siteName, jobId, status: 'PARTIAL' },
@@ -122,6 +126,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
 
         case 'ERROR': {
           // 发生错误时优先尝试 DOM 兜底，绝不提前让任务死锁
+          flightRecorder.error(siteName, 'NET_ERROR_OCCURRED', { jobId });
           triggerFallbackOnce('network error occurred');
           break;
         }
@@ -139,6 +144,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       if (hasCompleted) return;
       // 若网络层尚未吐出有效字词（如 Gemini/Wenxin 等网络拦截未捕获或前导耗时），用 DOM 推流保证界面响应
       if (accumulatedSnapshot.trim().length === 0 && snapshot.trim().length > 0) {
+        flightRecorder.info(siteName, 'DOM_STREAM_UPDATE', { length: snapshot.length, jobId });
         sendFn({
           type: 'STREAM_UPDATE',
           payload: {
@@ -162,10 +168,20 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       let selectedText = accumulatedSnapshot;
       const netLen = accumulatedSnapshot.trim().length;
       const domLen = finalCleaned.trim().length;
+      let chosenBy = 'NETWORK';
 
       if (netLen < 30 || (domLen > 60 && netLen < domLen * 0.4)) {
         selectedText = finalCleaned;
+        chosenBy = 'DOM_SENTINEL';
       }
+
+      flightRecorder.info(siteName, 'ARBITRATION_DONE', {
+        chosenBy,
+        netLen,
+        domLen,
+        selectedLen: selectedText.length,
+        jobId,
+      });
 
       const { cleaned } = stripThinkBlocks(selectedText);
       sendFn({
