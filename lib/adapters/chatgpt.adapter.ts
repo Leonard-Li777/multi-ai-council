@@ -216,7 +216,17 @@ export class ChatGPTAdapter implements AISiteAdapter {
       }
     }
 
-    // 4. 强力按键保底：派发真正的 Enter 键盘事件（ProseMirror 最可靠提交方式）
+    // 4. 表单原生提交尝试 (requestSubmit 唤醒 React onSubmit 监听)
+    const form = input.closest('form');
+    if (form && !this.findStopButton()) {
+      try {
+        form.requestSubmit();
+        flightRecorder.info('ChatGPT', 'FORM_REQUEST_SUBMIT_CALLED');
+        await this.sleep(300);
+      } catch {}
+    }
+
+    // 5. 强力按键保底：派发真正的 Enter 键盘事件（ProseMirror 最可靠提交方式）
     if (!this.findStopButton()) {
       input.focus();
       const enterInit: KeyboardEventInit = {

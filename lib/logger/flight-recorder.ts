@@ -10,6 +10,7 @@ export interface FlightLogEntry {
   level: LogLevel;
   action: string;
   details?: Record<string, unknown> | string;
+  repeatCount?: number;
 }
 
 const STORAGE_KEY = 'MULTI_AI_FLIGHT_LOGS';
@@ -54,6 +55,29 @@ class FlightRecorder {
       .toString()
       .padStart(3, '0')}`;
 
+    // 智能去重与高频折叠机制：若与上一条日志来源、级别、动作及详细参数完全一致，则就地递增计数
+    const lastEntry = this.memoryBuffer[this.memoryBuffer.length - 1];
+    const isSameDetails =
+      (!details && !lastEntry?.details) ||
+      (typeof details === 'string' && details === lastEntry?.details) ||
+      (typeof details === 'object' &&
+        typeof lastEntry?.details === 'object' &&
+        JSON.stringify(details) === JSON.stringify(lastEntry?.details));
+
+    if (
+      lastEntry &&
+      lastEntry.source === source &&
+      lastEntry.level === level &&
+      lastEntry.action === action &&
+      isSameDetails
+    ) {
+      lastEntry.repeatCount = (lastEntry.repeatCount || 1) + 1;
+      lastEntry.timestamp = now.getTime();
+      lastEntry.timeStr = timeStr;
+      this.scheduleFlush();
+      return;
+    }
+
     const entry: FlightLogEntry = {
       timestamp: now.getTime(),
       timeStr,
@@ -61,6 +85,7 @@ class FlightRecorder {
       level,
       action,
       details,
+      repeatCount: 1,
     };
 
     // 控制台同步输出
@@ -138,8 +163,48 @@ class FlightRecorder {
     lines.push(`- **导出时间**: ${new Date().toLocaleString()}`);
     lines.push(`- **记录条数**: ${logs.length} 条 (环形上限 ${MAX_LOGS})`);
     lines.push('');
-    lines.push('| 时间 | 模块/站点 | 级别 | 动作 | 详细参数 |');
-    lines.push('|---|---|---|---|---|');
+
+    // 1. 各站点最新生命周期状态快照总览表 (100% 覆盖所有站点，防止被局部日志稀释)
+    const allSites: SupportedSite[] = ['DeepSeek', 'ChatGPT', 'Claude', 'Gemini', 'Qwen', 'Wenxin'];
+    lines.push('#### 📊 各站点最新生命周期快照');
+    lines.push('| 站点 | 最新动作 | 级别 | 发生时间 | 重复 | 最近详细参数 |');
+    lines.push('|---|---|---|---|---|---|');
+
+    for (const site of allSites) {
+      // 倒序查找该站点的最新一条日志
+      let latestEntry: FlightLogEntry | undefined;
+      for (let i = logs.length - 1; i >= 0; i--) {
+        const item = logs[i];
+        if (item && item.source === site) {
+          latestEntry = item;
+          break;
+        }
+      }
+
+      if (latestEntry) {
+        let detailsStr = '';
+        if (latestEntry.details) {
+          if (typeof latestEntry.details === 'string') {
+            detailsStr = latestEntry.details.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+          } else {
+            try {
+              detailsStr = JSON.stringify(latestEntry.details).replace(/\|/g, '\\|');
+            } catch {
+              detailsStr = String(latestEntry.details);
+            }
+          }
+        }
+        const repeat = latestEntry.repeatCount && latestEntry.repeatCount > 1 ? `x${latestEntry.repeatCount}` : '1';
+        lines.push(`| **${site}** | \`${latestEntry.action}\` | ${latestEntry.level} | ${latestEntry.timeStr} | ${repeat} | ${detailsStr} |`);
+      } else {
+        lines.push(`| **${site}** | *(无日志)* | - | - | - | - |`);
+      }
+    }
+
+    lines.push('');
+    lines.push('#### 📜 近期事件明细 (最近 80 条)');
+    lines.push('| 时间 | 模块/站点 | 级别 | 动作 | 重复 | 详细参数 |');
+    lines.push('|---|---|---|---|---|---|');
 
     // 只保留最近 80 条防止过长
     const recentLogs = logs.slice(-80);
@@ -156,7 +221,8 @@ class FlightRecorder {
           }
         }
       }
-      lines.push(`| ${log.timeStr} | ${log.source} | ${log.level} | \`${log.action}\` | ${detailsStr} |`);
+      const repeat = log.repeatCount && log.repeatCount > 1 ? `x${log.repeatCount}` : '1';
+      lines.push(`| ${log.timeStr} | ${log.source} | ${log.level} | \`${log.action}\` | ${repeat} | ${detailsStr} |`);
     }
 
     return lines.join('\n');

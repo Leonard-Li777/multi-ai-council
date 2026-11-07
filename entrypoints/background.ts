@@ -60,6 +60,57 @@ export default defineBackground(() => {
   let synthesisTabId: number | null = null;
   let synthesisPort: chrome.runtime.Port | null = null;
   let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string } | null = null;
+  let councilGroupId: number | null = null;
+
+  /**
+   * 确保指定 Tab 归拢进入统一的 Multi-AI Council 标签分组，杜绝多开分散分组
+   */
+  async function ensureTabInCouncilGroup(tabId: number): Promise<void> {
+    if (!chrome.tabs?.group) return;
+    try {
+      let targetGroupId: number | null = null;
+      // 1. 先验证缓存的 groupId 是否在当前会话中仍然存活有效
+      if (councilGroupId !== null && chrome.tabGroups?.get) {
+        try {
+          const group = await chrome.tabGroups.get(councilGroupId);
+          if (group && group.id !== undefined) {
+            targetGroupId = group.id;
+          }
+        } catch {
+          councilGroupId = null;
+        }
+      }
+
+      // 2. 若缓存失效，查询当前窗口是否存在已有的 Multi-AI Council 分组
+      if (targetGroupId === null && chrome.tabGroups?.query) {
+        try {
+          const existing = await chrome.tabGroups.query({ title: 'Multi-AI Council' });
+          if (existing.length > 0 && existing[0]?.id !== undefined) {
+            targetGroupId = existing[0].id;
+            councilGroupId = targetGroupId;
+          }
+        } catch {}
+      }
+
+      // 3. 将标签页汇入分组（存在则复用，不存在则以当前标签建立首个分组并配置样式）
+      if (targetGroupId !== null) {
+        await chrome.tabs.group({ groupId: targetGroupId, tabIds: [tabId] });
+      } else {
+        const newGroupId = (await chrome.tabs.group({ tabIds: [tabId] })) as unknown as number;
+        if (typeof newGroupId === 'number' && !isNaN(newGroupId)) {
+          councilGroupId = newGroupId;
+          if (chrome.tabGroups?.update) {
+            await chrome.tabGroups.update(newGroupId, {
+              title: 'Multi-AI Council',
+              color: 'blue',
+            });
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[Background] ensureTabInCouncilGroup skipped or unsupported:', e);
+    }
+  }
 
   // 广播状态更新至 Side Panel（双通道：Port + runtime.sendMessage）
   function broadcastJobSync(job: ReviewJob | null) {
@@ -598,6 +649,7 @@ export default defineBackground(() => {
 
     if (targetTab && targetTab.id !== undefined) {
       siteTabs.set(siteName, targetTab.id);
+      ensureTabInCouncilGroup(targetTab.id).catch(() => {});
 
       // 若需要延续特定远程会话且不在对应会话 URL，才尝试导航
       if (job.isContinuation && existingRef?.conversationUrl && targetTab.url && targetTab.url !== existingRef.conversationUrl) {
@@ -639,19 +691,7 @@ export default defineBackground(() => {
         });
         if (targetTab?.id) {
           siteTabs.set(siteName, targetTab.id);
-          if (chrome.tabs.group) {
-            try {
-              const groupId = (await chrome.tabs.group({ tabIds: [targetTab.id] })) as unknown as number;
-              if (typeof groupId === 'number') {
-                await chrome.tabGroups.update(groupId, {
-                  title: 'Multi-AI Council',
-                  color: 'blue',
-                });
-              }
-            } catch (e) {
-              console.warn('[Background] Tab Grouping skipped or unsupported', e);
-            }
-          }
+          await ensureTabInCouncilGroup(targetTab.id);
         }
       } catch (e) {
         console.warn('[Background] tabs.create error:', e);

@@ -437,29 +437,38 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有机器人轮次外层卡片（包含整个回答的所有 Markdown 段落与代码块）
+    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框与编辑器容器）
     const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="user"])'
+        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="user"]):not([class*="input"]):not([class*="fixed"]):not([class*="bottom"]):not([class*="editor"]):not([class*="textarea"])'
       )
-    );
+    ).filter((el) => {
+      const cls = (el.className || '').toString().toLowerCase();
+      // 坚决排除任何包含 input、fixed、editor 的输入卡片
+      return !cls.includes('input') && !cls.includes('fixed') && !cls.includes('editor');
+    });
+
     if (turns.length > 0) {
       const lastTurn = turns[turns.length - 1]!;
       // 优先在该轮次内部寻找主内容容器，若无则直接返回整张卡片由 domToMarkdown 统一提取全文
       const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="content"], div[class*="markdown-body"], div.qwen-markdown');
-      const target = contentEl || lastTurn;
-      flightRecorder.info('Qwen', 'TURN_CONTAINER_MATCHED', {
-        turnClass: lastTurn.className,
-        matchedTag: target.tagName,
-        textLen: (target.innerText || '').length,
-      });
-      return target;
+      return contentEl || lastTurn;
     }
 
-    // 2. 降级：查找全量 qwen-markdown 容器中的最外层父容器
+    // 2. 降级：查找全量 qwen-markdown 容器，并向上寻找其所属的最外层消息容器
     const mdBodies = Array.from(document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]'));
     if (mdBodies.length > 0) {
-      return mdBodies[mdBodies.length - 1] ?? null;
+      const lastMd = mdBodies[mdBodies.length - 1]!;
+      const parentCard = lastMd.closest<HTMLElement>(
+        'div[class*="chat-item"], div[class*="message-item"], div[class*="chat-message"], div[class*="assistant"]'
+      );
+      if (parentCard) {
+        const cls = (parentCard.className || '').toString().toLowerCase();
+        if (!cls.includes('user') && !cls.includes('input') && !cls.includes('fixed')) {
+          return parentCard;
+        }
+      }
+      return lastMd;
     }
 
     return null;

@@ -132,6 +132,15 @@ export class WenxinAdapter implements AISiteAdapter {
       flightRecorder.warn('Wenxin', 'SEND_BUTTON_DISABLED_OR_NOT_FOUND', { exists: !!sendBtn, isDisabled });
     }
 
+    const form = input.closest('form');
+    if (form && !this.findStopButton()) {
+      try {
+        form.requestSubmit();
+        flightRecorder.info('Wenxin', 'FORM_REQUEST_SUBMIT_CALLED');
+        await this.sleep(200);
+      } catch {}
+    }
+
     const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
     if (currentVal.trim().length > 0) {
       const eventInit: KeyboardEventInit = {
@@ -361,7 +370,10 @@ export class WenxinAdapter implements AISiteAdapter {
       'div[class*="chat-message"]:not([class*="user"])',
     ];
 
-    const turns = Array.from(document.querySelectorAll<HTMLElement>(turnSelectors.join(', ')));
+    const turns = Array.from(document.querySelectorAll<HTMLElement>(turnSelectors.join(', '))).filter((el) => {
+      const cls = (el.className || '').toString().toLowerCase();
+      return !cls.includes('input') && !cls.includes('fixed') && !cls.includes('editor');
+    });
     if (turns.length > 0) {
       const lastTurn = turns[turns.length - 1]!;
       // 检查该轮次内部是否有主内容区域；若有多个段落，直接返回整张卡片由 domToMarkdown 统筹解析
