@@ -133,6 +133,12 @@ export default defineBackground(() => {
 
   // 统一处理 Content Script 上报的消息（支持 Port 与 runtime.onMessage）
   async function handleContentScriptMessage(msg: PortMessage, port?: chrome.runtime.Port) {
+    if (msg.type === 'FLIGHT_LOG') {
+      const { source, action, details, level } = msg.payload;
+      flightRecorder.record(source, action, details, level);
+      return;
+    }
+
     if (msg.type === 'CONTENT_READY') {
       const senderTabId = port?.sender?.tab?.id;
       const isSynthesisTab = senderTabId !== undefined && senderTabId === synthesisTabId;

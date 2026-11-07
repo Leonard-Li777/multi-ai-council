@@ -29,6 +29,9 @@ export function stripThinkBlocks(rawText: string): { cleaned: string; thinkConte
   // 3. 针对部分站点自定义的 class 如 .think-container 或折叠面板
   cleaned = cleaned.replace(/【思考过程】[\s\S]*?【思考结束】/gi, '').trim();
 
+  // 4. 清除类似“已经完成思考”、“Thought for x seconds”等独立思考头部标记
+  cleaned = cleaned.replace(/^(已经完成思考|思考完成|思考中\.\.\.|Thought for \d+ seconds?)\s*/i, '').trim();
+
   return {
     cleaned,
     thinkContent: thinkContent.trim(),

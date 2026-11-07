@@ -25,6 +25,7 @@ describe('FlightRecorder 飞行记录仪', () => {
     const report = await flightRecorder.exportDiagnosticReport();
     expect(report).toContain('### ✈️ Multi-AI Council 飞行记录仪诊断报告');
     expect(report).toContain('#### 📊 各站点最新生命周期快照');
+    expect(report).toContain('#### 📌 各站点独立事件轨迹');
     expect(report).toContain('| **DeepSeek** |');
     expect(report).toContain('| **ChatGPT** |');
     expect(report).toContain('| **Qwen** | `TURN_CONTAINER_MATCHED` |');
@@ -49,5 +50,17 @@ describe('FlightRecorder 飞行记录仪', () => {
     expect(updatedLogs.length).toBe(2);
     expect(updatedLogs[1]!.repeatCount).toBe(1);
     expect(updatedLogs[1]!.action).toBe('DONE');
+  });
+
+  it('同源同动作在短时间内参数略有差异时，依然执行抽样合并', async () => {
+    // 模拟类似 Gemini 带动态 className 的高频刷新
+    flightRecorder.info('Gemini', 'DOM_TEST', { className: 'box-id-1', len: 0 });
+    flightRecorder.info('Gemini', 'DOM_TEST', { className: 'box-id-2', len: 0 });
+    flightRecorder.info('Gemini', 'DOM_TEST', { className: 'box-id-3', len: 0 });
+
+    const logs = await flightRecorder.getLogs();
+    expect(logs.length).toBe(1);
+    expect(logs[0]!.repeatCount).toBe(3);
+    expect(logs[0]!.action).toBe('DOM_TEST');
   });
 });

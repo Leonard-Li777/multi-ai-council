@@ -190,12 +190,6 @@ export class GeminiAdapter implements AISiteAdapter {
           // domToMarkdown 失败时降级纯文本
         }
 
-        flightRecorder.info('Gemini', 'DOM_CONTENT_FETCHED', {
-          tag: lastMsgEl.tagName,
-          className: lastMsgEl.className,
-          textLen: result.length,
-        });
-
         this.currentSnapshot = result;
         return result;
       },
@@ -339,28 +333,35 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有 model-response 或 assistant 消息容器
+    // 1. 查找所有真正的 model-response 消息卡片（严格排除 footer/header/toolbar，杜绝误命中底部状态条）
     const modelResponses = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="response-container"], div[class*="model-turn"]'
+        'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="model-turn"], div[class*="response-container"]'
       )
-    );
+    ).filter((el) => {
+      const cls = (el.className || '').toString().toLowerCase();
+      return !cls.includes('footer') && !cls.includes('header') && !cls.includes('toolbar') && !cls.includes('action');
+    });
+
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
       const contentEl = last.querySelector<HTMLElement>(
-        'message-content, div.markdown, div[class*="markdown"], div[class*="response-container-content"], div[class*="model-response-text"]'
+        'message-content, div.markdown, div[class*="markdown"], div[class*="model-response-text"], div[class*="response-container-content"]'
       );
       return contentEl || last;
     }
 
-    // 2. 降级选择器
-    const msgs = Array.from(
+    // 2. 降级选择器：直接寻找页面上的 message-content 正文
+    const contents = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'message-content, div[class*="model-response-text"], div[class*="response-container"], div.markdown, div[class*="markdown-main-panel"]'
+        'message-content, div[class*="model-response-text"], div[class*="markdown-main-panel"]'
       )
     );
-    if (msgs.length === 0) return null;
-    return msgs[msgs.length - 1] ?? null;
+    if (contents.length > 0) {
+      return contents[contents.length - 1] ?? null;
+    }
+
+    return null;
   }
 
   private sleep(ms: number): Promise<void> {

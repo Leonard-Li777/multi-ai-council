@@ -1,4 +1,5 @@
 import type { ProviderStatus, ReviewJob, SupportedSite } from '../types/review-job';
+import type { LogSource, LogLevel } from '../logger/flight-recorder';
 
 export const SIDEPANEL_PORT_NAME = 'multi-ai-sidepanel-port';
 export const CONTENT_PORT_NAME = 'multi-ai-content-port';
@@ -7,6 +8,17 @@ export type PortMessage =
   // 心跳
   | { type: 'PING' }
   | { type: 'PONG' }
+
+  // 飞行记录仪跨进程日志归集 (Content Script / SidePanel -> Background)
+  | {
+      type: 'FLIGHT_LOG';
+      payload: {
+        source: LogSource;
+        action: string;
+        details?: Record<string, unknown> | string;
+        level: LogLevel;
+      };
+    }
 
   // Side Panel -> Background
   | { type: 'START_JOB'; payload: { job: ReviewJob } }

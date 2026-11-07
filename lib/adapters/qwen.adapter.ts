@@ -450,25 +450,18 @@ export class QwenAdapter implements AISiteAdapter {
 
     if (turns.length > 0) {
       const lastTurn = turns[turns.length - 1]!;
-      // 优先在该轮次内部寻找主内容容器，若无则直接返回整张卡片由 domToMarkdown 统一提取全文
-      const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="content"], div[class*="markdown-body"], div.qwen-markdown');
-      return contentEl || lastTurn;
+      // 优先在轮次内部匹配真正的正文 markdown 容器，绝不误选思考状态卡片
+      const mdEl = lastTurn.querySelector<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
+      if (mdEl && (mdEl.textContent || '').trim().length > 0) {
+        return mdEl;
+      }
+      return lastTurn;
     }
 
-    // 2. 降级：查找全量 qwen-markdown 容器，并向上寻找其所属的最外层消息容器
+    // 2. 降级：查找全量 qwen-markdown 容器中的最后一个
     const mdBodies = Array.from(document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]'));
     if (mdBodies.length > 0) {
-      const lastMd = mdBodies[mdBodies.length - 1]!;
-      const parentCard = lastMd.closest<HTMLElement>(
-        'div[class*="chat-item"], div[class*="message-item"], div[class*="chat-message"], div[class*="assistant"]'
-      );
-      if (parentCard) {
-        const cls = (parentCard.className || '').toString().toLowerCase();
-        if (!cls.includes('user') && !cls.includes('input') && !cls.includes('fixed')) {
-          return parentCard;
-        }
-      }
-      return lastMd;
+      return mdBodies[mdBodies.length - 1] ?? null;
     }
 
     return null;

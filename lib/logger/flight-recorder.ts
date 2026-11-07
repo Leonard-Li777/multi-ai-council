@@ -20,6 +20,8 @@ class FlightRecorder {
   private memoryBuffer: FlightLogEntry[] = [];
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isInitialized = false;
+  // 用于抽样与高频动作节流的最近记录映射表：key -> { timestamp, entryIndex }
+  private recentActionIndexMap = new Map<string, number>();
 
   constructor() {
     this.init();
@@ -40,6 +42,17 @@ class FlightRecorder {
     }
   }
 
+  /**
+   * 判断当前是否处于 Content Script 网页沙箱环境
+   */
+  private isContentScriptContext(): boolean {
+    return (
+      typeof window !== 'undefined' &&
+      typeof window.location !== 'undefined' &&
+      (window.location.protocol === 'http:' || window.location.protocol === 'https:')
+    );
+  }
+
   public record(
     source: LogSource,
     action: string,
@@ -55,8 +68,25 @@ class FlightRecorder {
       .toString()
       .padStart(3, '0')}`;
 
-    // 智能去重与高频折叠机制：若与上一条日志来源、级别、动作及详细参数完全一致，则就地递增计数
+    // 核心防御：若当前处于 Content Script，绝不私自覆盖 chrome.storage.local！
+    // 统一通过 runtime.sendMessage 委托给 Background 单点集中管理与落盘
+    if (this.isContentScriptContext()) {
+      try {
+        if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+          chrome.runtime.sendMessage({
+            type: 'FLIGHT_LOG',
+            payload: { source, action, details, level },
+          }).catch(() => {});
+        }
+      } catch {}
+      return;
+    }
+
+    // --- Background 集中聚合与抽样限流处理 ---
+    const throttleKey = `${source}:${action}`;
     const lastEntry = this.memoryBuffer[this.memoryBuffer.length - 1];
+
+    // 1. 严格全等连续折叠（同源、同级、同动作、同参数）
     const isSameDetails =
       (!details && !lastEntry?.details) ||
       (typeof details === 'string' && details === lastEntry?.details) ||
@@ -78,6 +108,37 @@ class FlightRecorder {
       return;
     }
 
+    // 2. 抽样限流 (Sampling / Throttle)：针对 2 秒内同源同动作的密集日志强制抽样合并，杜绝动态 ID 导致的刷屏
+    const existingIndex = this.recentActionIndexMap.get(throttleKey);
+    if (existingIndex !== undefined && existingIndex < this.memoryBuffer.length) {
+      const targetEntry = this.memoryBuffer[existingIndex];
+      if (
+        targetEntry &&
+        targetEntry.source === source &&
+        targetEntry.action === action &&
+        now.getTime() - targetEntry.timestamp < 2000 &&
+        level !== 'ERROR'
+      ) {
+        targetEntry.repeatCount = (targetEntry.repeatCount || 1) + 1;
+        targetEntry.timestamp = now.getTime();
+        targetEntry.timeStr = timeStr;
+        if (details) targetEntry.details = details;
+        this.scheduleFlush();
+        return;
+      }
+    }
+
+    // 控制台同步输出 (仅针对新建事件输出，避免控制台刷屏)
+    const prefix = `[FlightRecorder:${source}][${action}]`;
+    if (level === 'ERROR') {
+      console.error(prefix, details || '');
+    } else if (level === 'WARN') {
+      console.warn(prefix, details || '');
+    } else {
+      console.log(prefix, details || '');
+    }
+
+    // 3. 正常写入新条目
     const entry: FlightLogEntry = {
       timestamp: now.getTime(),
       timeStr,
@@ -88,22 +149,47 @@ class FlightRecorder {
       repeatCount: 1,
     };
 
-    // 控制台同步输出
-    const prefix = `[FlightRecorder:${source}][${action}]`;
-    if (level === 'ERROR') {
-      console.error(prefix, details || '');
-    } else if (level === 'WARN') {
-      console.warn(prefix, details || '');
-    } else {
-      console.log(prefix, details || '');
-    }
-
     this.memoryBuffer.push(entry);
+    this.recentActionIndexMap.set(throttleKey, this.memoryBuffer.length - 1);
+
+    // 4. 环形配额平衡修剪：若超出上限，优先淘汰占比过高（>25%）站点的最旧记录，防止某单站淹没全部历史
     if (this.memoryBuffer.length > MAX_LOGS) {
-      this.memoryBuffer.splice(0, this.memoryBuffer.length - MAX_LOGS);
+      this.pruneBufferWithQuota();
     }
 
     this.scheduleFlush();
+  }
+
+  /**
+   * 环形配额修剪：保护多站点平衡，杜绝单站垄断
+   */
+  private pruneBufferWithQuota(): void {
+    const toRemove = this.memoryBuffer.length - MAX_LOGS;
+    if (toRemove <= 0) return;
+
+    // 统计各站点条数
+    const counts = new Map<LogSource, number>();
+    for (const item of this.memoryBuffer) {
+      counts.set(item.source, (counts.get(item.source) || 0) + 1);
+    }
+
+    // 查找超出配额上限（> 25%）的站点
+    const quotaLimit = Math.floor(MAX_LOGS * 0.25);
+    let removed = 0;
+    for (let i = 0; i < this.memoryBuffer.length && removed < toRemove; i++) {
+      const item = this.memoryBuffer[i];
+      if (item && (counts.get(item.source) || 0) > quotaLimit) {
+        this.memoryBuffer.splice(i, 1);
+        counts.set(item.source, (counts.get(item.source) || 0) - 1);
+        removed++;
+        i--;
+      }
+    }
+
+    // 若仍有溢出，按 FIFO 平滑截断
+    if (this.memoryBuffer.length > MAX_LOGS) {
+      this.memoryBuffer.splice(0, this.memoryBuffer.length - MAX_LOGS);
+    }
   }
 
   public info(source: LogSource, action: string, details?: Record<string, unknown> | string): void {
@@ -201,13 +287,44 @@ class FlightRecorder {
       }
     }
 
+    // 2. 站点隔离关键事件流水 (每个站点独立配额，100% 杜绝跨站淹没)
     lines.push('');
-    lines.push('#### 📜 近期事件明细 (最近 80 条)');
+    lines.push('#### 📌 各站点独立事件轨迹 (站点隔离，杜绝相互掩盖)');
+    const trackedSources: LogSource[] = ['DeepSeek', 'ChatGPT', 'Claude', 'Gemini', 'Qwen', 'Wenxin', 'Background'];
+    for (const src of trackedSources) {
+      const siteLogs = logs.filter((l) => l.source === src).slice(-6);
+      if (siteLogs.length > 0) {
+        lines.push(`\n**[${src}] (最近 ${siteLogs.length} 条)**`);
+        lines.push('| 时间 | 级别 | 动作 | 重复 | 详细参数 |');
+        lines.push('|---|---|---|---|---|');
+        for (const log of siteLogs) {
+          let detailsStr = '';
+          if (log.details) {
+            if (typeof log.details === 'string') {
+              detailsStr = log.details.replace(/\|/g, '\\|').replace(/\n/g, ' ');
+            } else {
+              try {
+                detailsStr = JSON.stringify(log.details).replace(/\|/g, '\\|');
+              } catch {
+                detailsStr = String(log.details);
+              }
+            }
+          }
+          const repeat = log.repeatCount && log.repeatCount > 1 ? `x${log.repeatCount}` : '1';
+          lines.push(`| ${log.timeStr} | ${log.level} | \`${log.action}\` | ${repeat} | ${detailsStr} |`);
+        }
+      } else {
+        lines.push(`\n**[${src}]**: *(暂无运行记录)*`);
+      }
+    }
+
+    lines.push('');
+    lines.push('#### 📜 全局近期事件明细 (最近 50 条)');
     lines.push('| 时间 | 模块/站点 | 级别 | 动作 | 重复 | 详细参数 |');
     lines.push('|---|---|---|---|---|---|');
 
-    // 只保留最近 80 条防止过长
-    const recentLogs = logs.slice(-80);
+    // 只保留最近 50 条防止过长
+    const recentLogs = logs.slice(-50);
     for (const log of recentLogs) {
       let detailsStr = '';
       if (log.details) {
