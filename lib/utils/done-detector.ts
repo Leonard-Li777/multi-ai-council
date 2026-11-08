@@ -68,12 +68,18 @@ export class QuadSignalDoneDetector {
 
   private handleMutation() {
     const current = this.options.getCurrentContent();
-    this.options.onUpdate(current);
+    const currentLen = current.trim().length;
 
-    // 重置静默计时器
-    if (this.silenceTimer) {
-      window.clearTimeout(this.silenceTimer);
-      this.silenceTimer = null;
+    // 关键防抖与防打断：只有当正文文本发生实质变化时，才通知更新并重置静默定时器
+    // 杜绝光标闪烁、CSS 动画微动不断打断 silenceTimer 导致永远无法收敛为 DONE
+    if (currentLen !== this.lastContentLength) {
+      if (currentLen > 0) {
+        this.options.onUpdate(current);
+      }
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
     }
 
     this.checkSignals();

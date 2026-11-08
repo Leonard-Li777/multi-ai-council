@@ -183,24 +183,40 @@ export class GeminiAdapter implements AISiteAdapter {
         // 核心：若获取到的是包含整个回答的卡片容器，通过克隆并将底部的工具栏、操作按钮等剔除，完整保留整篇长回答
         let targetEl = lastMsgEl;
         const noisyNodes = targetEl.querySelectorAll(
-          'div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button'
+          'div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button, [class*="response-container-footer"]'
         );
         if (noisyNodes.length > 0) {
           const clone = targetEl.cloneNode(true) as HTMLElement;
           clone
-            .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button')
+            .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button, [class*="response-container-footer"]')
             .forEach((n) => n.remove());
           targetEl = clone;
         }
 
-        let result = (targetEl.innerText || targetEl.textContent || '').trim();
-        try {
-          const md = domToMarkdown(targetEl);
-          if (md && md.trim().length > 0) {
-            result = md;
+        // 优先提取内部所有段落：若包含多个 message-content，完整拼接所有段落杜绝截断
+        const msgContents = Array.from(targetEl.querySelectorAll<HTMLElement>('message-content')).filter(
+          (el) => (el.innerText || el.textContent || '').trim().length > 0
+        );
+
+        let result = '';
+        if (msgContents.length > 1) {
+          result = msgContents
+            .map((el) => {
+              const md = domToMarkdown(el);
+              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+            })
+            .filter(Boolean)
+            .join('\n\n');
+        } else {
+          result = (targetEl.innerText || targetEl.textContent || '').trim();
+          try {
+            const md = domToMarkdown(targetEl);
+            if (md && md.trim().length > 0) {
+              result = md;
+            }
+          } catch {
+            // domToMarkdown 失败时降级纯文本
           }
-        } catch {
-          // domToMarkdown 失败时降级纯文本
         }
 
         // 核心防护：若当前内容完全属于思考块或少于 15 字符的占位模型名，返回空以保持侦测
@@ -220,7 +236,7 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 4500,
+      silenceThresholdMs: 3500,
     });
 
     this.activeDetector.start(chatContainer);
@@ -342,11 +358,11 @@ export class GeminiAdapter implements AISiteAdapter {
 
   private findStopButton(): HTMLElement | null {
     return (
-      document.querySelector<HTMLElement>('button[aria-label="Stop response"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="Stop generating"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="停止响应"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="停止生成"]') ||
-      document.querySelector<HTMLElement>('button[data-test-id="stop-button"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="Stop"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
+      document.querySelector<HTMLElement>('div[role="button"][aria-label*="Stop"]') ||
+      document.querySelector<HTMLElement>('div[role="button"][aria-label*="停止"]') ||
+      document.querySelector<HTMLElement>('button[data-test-id*="stop"]') ||
       document.querySelector<HTMLElement>('button.stop-button')
     );
   }
