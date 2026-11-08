@@ -60,52 +60,119 @@ export default defineBackground(() => {
   let synthesisTabId: number | null = null;
   let synthesisPort: chrome.runtime.Port | null = null;
   let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string } | null = null;
-  let councilGroupId: number | null = null;
+
+  const SESSION_COUNCIL_GROUP_KEY = 'MULTI_AI_COUNCIL_GROUP_ID';
+  let groupingMutex: Promise<number | null> | null = null;
 
   /**
-   * 确保指定 Tab 归拢进入统一的 Multi-AI Council 标签分组，杜绝多开分散分组
+   * 监听标签组手动解散或关闭事件，及时清除 session 状态
+   */
+  if (chrome.tabGroups?.onRemoved) {
+    chrome.tabGroups.onRemoved.addListener((group) => {
+      chrome.storage?.session?.get(SESSION_COUNCIL_GROUP_KEY).then((data) => {
+        if (data && data[SESSION_COUNCIL_GROUP_KEY] === group.id) {
+          chrome.storage.session.remove(SESSION_COUNCIL_GROUP_KEY).catch(() => {});
+        }
+      }).catch(() => {});
+    });
+  }
+
+  /**
+   * 原子化获取或创建统一的 Multi-AI Council 标签组（以 session 为唯一持久事实源，杜绝 SW 回收后重复建组）
+   */
+  async function getOrCreateCouncilGroupId(anchorTabId: number): Promise<number | null> {
+    // 1. 优先从 chrome.storage.session 恢复（SW 30s 回收后幂等自愈）
+    let cachedId: number | null = null;
+    try {
+      if (chrome.storage?.session) {
+        const data = await chrome.storage.session.get(SESSION_COUNCIL_GROUP_KEY);
+        if (typeof data[SESSION_COUNCIL_GROUP_KEY] === 'number') {
+          cachedId = data[SESSION_COUNCIL_GROUP_KEY];
+        }
+      }
+    } catch {}
+
+    // 2. 校验缓存的 groupId 是否在当前浏览器窗口仍然存活有效
+    if (cachedId !== null && chrome.tabGroups?.get) {
+      try {
+        const group = await chrome.tabGroups.get(cachedId);
+        if (group && group.id !== undefined) {
+          return group.id;
+        }
+      } catch {
+        cachedId = null;
+        if (chrome.storage?.session) {
+          await chrome.storage.session.remove(SESSION_COUNCIL_GROUP_KEY).catch(() => {});
+        }
+      }
+    }
+
+    // 3. 全局扫描所有当前活动的分组（直接全量 query，避开各版本 Chrome 对特定 query 过滤属性的兼容性差异）
+    if (chrome.tabGroups?.query) {
+      try {
+        const allGroups = await chrome.tabGroups.query({});
+        const existing = allGroups.find(
+          (g) => g.title === 'Multi-AI Council' || g.title?.trim().toLowerCase() === 'multi-ai council'
+        );
+        if (existing && existing.id !== undefined) {
+          if (chrome.storage?.session) {
+            await chrome.storage.session.set({ [SESSION_COUNCIL_GROUP_KEY]: existing.id }).catch(() => {});
+          }
+          return existing.id;
+        }
+      } catch {}
+    }
+
+    // 4. 当前浏览器确实不存在任何 Council 标签组，以 anchorTabId 作为种子建立唯一的全局分组并着色
+    try {
+      const newGroupId = (await chrome.tabs.group({ tabIds: [anchorTabId] })) as unknown as number;
+      if (typeof newGroupId === 'number' && !isNaN(newGroupId)) {
+        if (chrome.tabGroups?.update) {
+          await chrome.tabGroups.update(newGroupId, {
+            title: 'Multi-AI Council',
+            color: 'blue',
+          }).catch(() => {});
+        }
+        if (chrome.storage?.session) {
+          await chrome.storage.session.set({ [SESSION_COUNCIL_GROUP_KEY]: newGroupId }).catch(() => {});
+        }
+        return newGroupId;
+      }
+    } catch (e) {
+      console.warn('[Background] Failed to create new council tab group:', e);
+    }
+
+    return null;
+  }
+
+  /**
+   * 确保指定 Tab 归拢进入统一的 Multi-AI Council 标签分组，杜绝多开分散分组与每次执行重复建组
    */
   async function ensureTabInCouncilGroup(tabId: number): Promise<void> {
     if (!chrome.tabs?.group) return;
     try {
-      let targetGroupId: number | null = null;
-      // 1. 先验证缓存的 groupId 是否在当前会话中仍然存活有效
-      if (councilGroupId !== null && chrome.tabGroups?.get) {
-        try {
-          const group = await chrome.tabGroups.get(councilGroupId);
-          if (group && group.id !== undefined) {
-            targetGroupId = group.id;
-          }
-        } catch {
-          councilGroupId = null;
+      // 检查当前 tab 是否存活以及是否已经在某个 group 中
+      let currentTab: chrome.tabs.Tab | undefined;
+      try {
+        currentTab = await chrome.tabs.get(tabId);
+      } catch {
+        return; // Tab 可能已被关闭
+      }
+
+      // 互斥串行锁：防止多站点并发启动时竞态导致同时创建多个新组
+      if (!groupingMutex) {
+        groupingMutex = getOrCreateCouncilGroupId(tabId).finally(() => {
+          groupingMutex = null;
+        });
+      }
+
+      const targetGroupId = await groupingMutex;
+      if (targetGroupId !== null && typeof targetGroupId === 'number') {
+        // 若当前 tab 已经位于目标分组中，直接幂等返回，严禁重复 group
+        if (currentTab?.groupId === targetGroupId) {
+          return;
         }
-      }
-
-      // 2. 若缓存失效，查询当前窗口是否存在已有的 Multi-AI Council 分组
-      if (targetGroupId === null && chrome.tabGroups?.query) {
-        try {
-          const existing = await chrome.tabGroups.query({ title: 'Multi-AI Council' });
-          if (existing.length > 0 && existing[0]?.id !== undefined) {
-            targetGroupId = existing[0].id;
-            councilGroupId = targetGroupId;
-          }
-        } catch {}
-      }
-
-      // 3. 将标签页汇入分组（存在则复用，不存在则以当前标签建立首个分组并配置样式）
-      if (targetGroupId !== null) {
         await chrome.tabs.group({ groupId: targetGroupId, tabIds: [tabId] });
-      } else {
-        const newGroupId = (await chrome.tabs.group({ tabIds: [tabId] })) as unknown as number;
-        if (typeof newGroupId === 'number' && !isNaN(newGroupId)) {
-          councilGroupId = newGroupId;
-          if (chrome.tabGroups?.update) {
-            await chrome.tabGroups.update(newGroupId, {
-              title: 'Multi-AI Council',
-              color: 'blue',
-            });
-          }
-        }
       }
     } catch (e) {
       console.warn('[Background] ensureTabInCouncilGroup skipped or unsupported:', e);
@@ -338,20 +405,9 @@ export default defineBackground(() => {
         }
       }
       if (openedTabIds.length > 0) {
-        try {
-          if (chrome.tabs.group) {
-            const firstId = openedTabIds[0]!;
-            const groupId = (await chrome.tabs.group({
-              tabIds: [firstId, ...openedTabIds.slice(1)],
-            })) as unknown as number;
-            if (typeof groupId === 'number') {
-              await chrome.tabGroups.update(groupId, {
-                title: 'Multi-AI Council',
-                color: 'blue',
-              });
-            }
-          }
-        } catch {}
+        for (const tId of openedTabIds) {
+          await ensureTabInCouncilGroup(tId);
+        }
         chrome.tabs.update(openedTabIds[0]!, { active: true });
       }
     } else if (msg.type === 'RETRY_SITE') {
@@ -826,17 +882,7 @@ export default defineBackground(() => {
 
     if (targetTab?.id) {
       synthesisTabId = targetTab.id;
-      try {
-        if (chrome.tabs.group) {
-          const groupId = await chrome.tabs.group({ tabIds: [targetTab.id] });
-          await chrome.tabGroups.update(groupId, {
-            title: 'Multi-AI Council',
-            color: 'blue',
-          });
-        }
-      } catch (e) {
-        console.warn('[Background] Tab Grouping for synthesis tab skipped', e);
-      }
+      await ensureTabInCouncilGroup(targetTab.id);
     }
 
     const updated = await updateSynthesisRun(job.id, {
