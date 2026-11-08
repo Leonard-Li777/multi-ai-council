@@ -57,8 +57,11 @@ export function matchGenerationEndpoint(
     return 'QWEN';
   }
 
-  // 5. 百度文心一言: /eb/chat/conversation
-  if (/\/eb\/chat\/conversation(\?.*)?$/.test(url) || url.includes('/eb/chat/conversation')) {
+  // 5. 百度文心一言: 广泛兼容 /eb/chat/conversation, /chat/conversation, /api/chat/... 等请求
+  if (
+    (url.includes('baidu.com') || url.includes('yiyan') || url.includes('wenxin')) &&
+    (url.includes('/conversation') || url.includes('/chat') || url.includes('/query'))
+  ) {
     return 'WENXIN';
   }
 

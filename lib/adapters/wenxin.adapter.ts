@@ -191,7 +191,7 @@ export class WenxinAdapter implements AISiteAdapter {
     onDone: (finalCleaned: string) => void
   ): () => void {
     const chatContainer =
-      document.querySelector<HTMLElement>('main, div[class*="chat-wrap"], div[class*="dialogue"]') ||
+      document.querySelector<HTMLElement>('main, div[class*="chat-wrap"], div[class*="dialogue"], div[class*="chat-body"], div[class*="chatBody"]') ||
       document.body;
 
     this.activeDetector = new QuadSignalDoneDetector({
@@ -221,6 +221,12 @@ export class WenxinAdapter implements AISiteAdapter {
           }
         } catch {}
 
+        // 思考中过滤：若剥离思考后长度为 0，返回空以保持监听
+        const { cleaned } = stripThinkBlocks(result);
+        if (cleaned.length === 0) {
+          return '';
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -232,7 +238,7 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2500,
+      silenceThresholdMs: 3500,
     });
 
     this.activeDetector.start(chatContainer);
@@ -279,8 +285,12 @@ export class WenxinAdapter implements AISiteAdapter {
     return (
       document.querySelector<HTMLElement>('span[class*="stop"]') ||
       document.querySelector<HTMLElement>('button[class*="stop"]') ||
+      document.querySelector<HTMLElement>('div[class*="stop"]') ||
       document.querySelector<HTMLElement>('div[class*="stop-btn"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止"]')
+      document.querySelector<HTMLElement>('div[class*="stopBtn"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
+      document.querySelector<HTMLElement>('div[role="button"][aria-label*="停止"]') ||
+      document.querySelector<HTMLElement>('span[aria-label*="停止"]')
     );
   }
 
@@ -359,42 +369,98 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有机器人回答轮次的最外层卡片容器（确保包含整个回答的所有段落与代码块）
+    // 1. 查找所有可能的机器人轮次外层卡片（广泛兼容历代文心一言与当前现代版本）
     const turnSelectors = [
-      'div[class*="chat-item-robot"]',
-      'div[class*="robot-item"]',
-      'div[class*="robot_item"]',
+      'div[class*="messageListItem"]',
+      'div[class*="message-item"]',
+      'div[class*="messageItem"]',
+      'div[class*="chat-item"]',
+      'div[class*="chatItem"]',
+      'div[class*="dialogue-item"]',
+      'div[class*="chat-message"]',
       'div[class*="ans-item"]',
       'div[class*="answer-item"]',
-      'div[class*="dialogue-item"]:not([class*="user"])',
-      'div[class*="chat-message"]:not([class*="user"])',
+      'div[class*="answerItem"]',
+      'div[class*="robot-item"]',
+      'div[class*="robot_item"]',
+      'div[class*="robotItem"]',
+      'div[class*="assistant"]',
+      'div[class*="bot-message"]',
+      'div[data-role="assistant"]',
+      'div[data-is-user="false"]',
     ];
 
     const turns = Array.from(document.querySelectorAll<HTMLElement>(turnSelectors.join(', '))).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      return !cls.includes('input') && !cls.includes('fixed') && !cls.includes('editor');
+      const role = (el.getAttribute('data-role') || '').toLowerCase();
+      const isUser =
+        cls.includes('user') ||
+        cls.includes('human') ||
+        cls.includes('self') ||
+        cls.includes('right') ||
+        role === 'user' ||
+        el.getAttribute('data-is-user') === 'true';
+      const isInput = cls.includes('input') || cls.includes('fixed') || cls.includes('editor') || cls.includes('textarea');
+      return !isUser && !isInput;
     });
+
     if (turns.length > 0) {
       const lastTurn = turns[turns.length - 1]!;
-      // 检查该轮次内部是否有主内容区域；若有多个段落，直接返回整张卡片由 domToMarkdown 统筹解析
-      const contentEl = lastTurn.querySelector<HTMLElement>('div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"]');
-      return contentEl || lastTurn;
+      // 优先在最新轮次内部查找正文富文本/Markdown 容器
+      const contentEl = lastTurn.querySelector<HTMLElement>(
+        'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+      );
+      if (contentEl && (contentEl.innerText || contentEl.textContent || '').trim().length > 0) {
+        return contentEl;
+      }
+      return lastTurn;
     }
 
-    // 2. 降级：查询页面中所有的 eb-markdown 容器
-    const mdList = Array.from(document.querySelectorAll<HTMLElement>('div[class*="eb-markdown"], div[class*="robot-content"], div[class*="markdown-body"]'));
+    // 2. 降级：查询页面中所有非用户的 markdown / 富文本正文容器
+    const mdList = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="markdown-body"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"]'
+      )
+    ).filter((el) => {
+      const cls = (el.className || '').toLowerCase();
+      const parentCls = (el.parentElement?.className || '').toLowerCase();
+      const isInput = cls.includes('input') || cls.includes('editor') || parentCls.includes('input') || parentCls.includes('editor');
+      const isUser = cls.includes('user') || parentCls.includes('user');
+      return !isInput && !isUser;
+    });
+
     if (mdList.length > 0) {
       return mdList[mdList.length - 1] ?? null;
     }
 
-    // 3. 降级：寻找聊天区域内的非用户消息
-    const allBubbles = Array.from(document.querySelectorAll<HTMLElement>('main div[class*="content"], div[class*="chat"] div[class*="message"], div[class*="dialogue"] div[class*="item"]'));
-    const nonUserBubbles = allBubbles.filter(b => {
+    // 3. 降级：通过助手专属工具栏（如“复制回答”、“重新生成”等按钮）定位父级回答容器
+    const toolButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[aria-label*="复制"], div[aria-label*="复制"], span[aria-label*="复制"], div[class*="copy"], button[class*="copy"], div[class*="action"], div[class*="feedback"]'
+      )
+    );
+    for (let i = toolButtons.length - 1; i >= 0; i--) {
+      const btn = toolButtons[i]!;
+      const parentMsg = btn.closest<HTMLElement>(
+        'div[class*="item"], div[class*="message"], div[class*="dialogue"], div[class*="content"]'
+      );
+      if (parentMsg) {
+        return parentMsg;
+      }
+    }
+
+    // 4. 降级：寻找聊天区域内的所有非用户段落组合
+    const allBubbles = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'main div[class*="content"], div[class*="chat"] div[class*="content"], div[class*="dialogue"] div[class*="content"], div[role="log"] div[class*="content"]'
+      )
+    ).filter((b) => {
       const cls = (b.className || '').toLowerCase();
-      return !cls.includes('user') && !cls.includes('self') && !cls.includes('human');
+      return !cls.includes('user') && !cls.includes('self') && !cls.includes('human') && !cls.includes('input');
     });
-    if (nonUserBubbles.length > 0) {
-      return nonUserBubbles[nonUserBubbles.length - 1] ?? null;
+
+    if (allBubbles.length > 0) {
+      return allBubbles[allBubbles.length - 1] ?? null;
     }
 
     return null;

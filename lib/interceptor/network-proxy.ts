@@ -17,8 +17,11 @@ export function isAiStreamRequest(url: string, method: string): boolean {
   if (url.includes('/api/organizations')) return true;
   // 通义千问 (收紧规则: 必须包含 /api/ 且包含 chat)
   if (url.includes('/api/') && url.includes('chat')) return true;
-  // 百度文心一言
-  if (url.includes('/eb/chat/conversation')) return true;
+  // 百度文心一言 (广泛兼容各类聊天生成接口)
+  if (
+    (url.includes('baidu.com') || url.includes('yiyan') || url.includes('wenxin')) &&
+    (url.includes('/conversation') || url.includes('/chat') || url.includes('/query'))
+  ) return true;
   // Google Gemini RPC
   if (url.includes('StreamGenerate') || url.includes('assistant.lamda')) return true;
 

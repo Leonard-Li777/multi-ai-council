@@ -97,19 +97,62 @@ export function parseQwenEvent(event: SSEEvent): AdapterParseResult | null {
 }
 
 /**
- * 解析百度文心一言 Chunked JSON
+ * 解析百度文心一言 Chunked JSON 与 SSE 流数据
  */
 export function parseWenxinChunk(rawChunk: string): AdapterParseResult | null {
   if (!rawChunk) return null;
-  const trimmed = rawChunk.trim();
 
-  try {
-    const json = JSON.parse(trimmed);
-    const text = typeof json.result === 'string' ? json.result : '';
-    const isDone = Boolean(json.is_end);
-    return { text, isDone, mode: 'DELTA' };
-  } catch {
-    // 容错处理
+  const lines = rawChunk.split('\n').map((l) => l.trim()).filter(Boolean);
+  let aggregatedText = '';
+  let isDone = false;
+  let parsedAtLeastOne = false;
+
+  for (const line of lines) {
+    let cleanJsonStr = line;
+    if (cleanJsonStr.startsWith('data:')) {
+      cleanJsonStr = cleanJsonStr.slice(5).trim();
+    }
+    if (!cleanJsonStr || cleanJsonStr === '[DONE]') {
+      if (cleanJsonStr === '[DONE]') isDone = true;
+      continue;
+    }
+
+    try {
+      const json = JSON.parse(cleanJsonStr);
+      parsedAtLeastOne = true;
+
+      // 广泛兼容直接字段与 data 包裹层
+      const dataObj = (json.data && typeof json.data === 'object') ? json.data : json;
+      const text =
+        (typeof dataObj.result === 'string' ? dataObj.result : null) ??
+        (typeof dataObj.content === 'string' ? dataObj.content : null) ??
+        (typeof dataObj.text === 'string' ? dataObj.text : null) ??
+        (typeof dataObj.sentence === 'string' ? dataObj.sentence : null) ??
+        (typeof dataObj.response === 'string' ? dataObj.response : null) ??
+        (typeof json.result === 'string' ? json.result : null) ??
+        (typeof json.content === 'string' ? json.content : null) ??
+        '';
+
+      if (text) {
+        aggregatedText += text;
+      }
+
+      if (
+        Boolean(dataObj.is_end) ||
+        Boolean(dataObj.is_finished) ||
+        Boolean(json.is_end) ||
+        Boolean(json.is_finished) ||
+        dataObj.finish_reason === 'stop' ||
+        json.finish_reason === 'stop'
+      ) {
+        isDone = true;
+      }
+    } catch {
+      // 忽略单个非 JSON 帧
+    }
   }
-  return null;
+
+  if (!parsedAtLeastOne && !isDone) return null;
+
+  return { text: aggregatedText, isDone, mode: 'DELTA' };
 }
