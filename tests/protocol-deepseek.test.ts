@@ -99,4 +99,71 @@ describe('AC4: DeepSeek R1 思考过程与正文管道分离解析', () => {
     });
     expect(doneFrame?.isDone).toBe(true);
   });
+
+  it('能精准识别 type: "thinking" 且文本在 delta.content 中的思维链切片，彻底阻断其进入正文', () => {
+    const parser = new DeepSeekStreamParser();
+
+    // 很多 Web 端 chunk 中将思考文本放在 delta.content，同时带有 type: 'thinking'
+    const t1 = parser.parseEvent({
+      data: JSON.stringify({
+        choices: [
+          {
+            delta: { content: '第一阶段深度剖析...', type: 'thinking' },
+          },
+        ],
+      }),
+    });
+    expect(t1?.kind).toBe('THINKING');
+    expect(t1?.text).toBe('第一阶段深度剖析...');
+    expect(parser.getReasoningText()).toBe('第一阶段深度剖析...');
+    expect(parser.getContentText()).toBe('');
+
+    // 正文切换：type 为 normal 或省略
+    const c1 = parser.parseEvent({
+      data: JSON.stringify({
+        choices: [
+          {
+            delta: { content: '这是剥离思维链后的正式回答。' },
+          },
+        ],
+      }),
+    });
+    expect(c1?.kind).toBe('CONTENT');
+    expect(c1?.text).toBe('这是剥离思维链后的正式回答。');
+    expect(parser.getContentText()).toBe('这是剥离思维链后的正式回答。');
+    expect(parser.getReasoningText()).toBe('第一阶段深度剖析...');
+  });
+
+  it('能通过状态机跨 Chunk 过滤原生 <think>...</think> 标签，正文仅保留标签外内容', () => {
+    const parser = new DeepSeekStreamParser();
+
+    // Chunk 1: 开始思维链
+    const p1 = parser.parseEvent({
+      data: JSON.stringify({
+        choices: [{ delta: { content: '<think>这是第一步思考' } }],
+      }),
+    });
+    expect(p1?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+
+    // Chunk 2: 思维链延续
+    const p2 = parser.parseEvent({
+      data: JSON.stringify({
+        choices: [{ delta: { content: '，第二步推导。' } }],
+      }),
+    });
+    expect(p2?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+
+    // Chunk 3: 思考结束并立刻开启正式回答
+    const p3 = parser.parseEvent({
+      data: JSON.stringify({
+        choices: [{ delta: { content: '</think>最终正式结论在这里。' } }],
+      }),
+    });
+    expect(p3?.kind).toBe('CONTENT');
+    expect(p3?.text).toBe('最终正式结论在这里。');
+    expect(parser.getContentText()).toBe('最终正式结论在这里。');
+    expect(parser.getReasoningText()).toContain('这是第一步思考，第二步推导。');
+  });
 });

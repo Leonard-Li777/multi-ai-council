@@ -210,8 +210,28 @@ export class DeepSeekAdapter implements AISiteAdapter {
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        // 核心防护：若提取的容器中含有深度思考思维链折叠块，克隆节点并彻底剔除，只保留正式回复
+        let targetEl = lastMsgEl;
+        const thinkNodes = targetEl.querySelectorAll(
+          'div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]'
+        );
+        if (thinkNodes.length > 0) {
+          const clone = targetEl.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll('div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]')
+            .forEach((n) => n.remove());
+          targetEl = clone;
+        }
+
+        const md = domToMarkdown(targetEl);
+        const result = (md && md.trim().length > 0) ? md : (targetEl.innerText || targetEl.textContent || '').trim();
+
+        // 思考中防护：若清洗后正文长度为 0，说明模型仍在思考尚未吐出正文，返回空保持等待
+        const { cleaned } = stripThinkBlocks(result);
+        if (cleaned.length === 0) {
+          return '';
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -345,14 +365,42 @@ export class DeepSeekAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // DeepSeek 回答通常在 .ds-markdown 类或类似消息块中
-    const messages = Array.from(
+    // 1. 查找所有机器人轮次外层卡片（严格排除输入框）
+    const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
-        '.ds-markdown, div[class*="ds-markdown"], div[class*="message-content"], div[class*="assistant"]'
+        'div[class*="chat-item-assistant"], div[class*="message-assistant"], div[class*="assistant-item"], div[class*="chat-message"]:not([class*="user"])'
       )
-    );
-    if (messages.length === 0) return null;
-    return messages[messages.length - 1] ?? null;
+    ).filter((el) => {
+      const cls = (el.className || '').toLowerCase();
+      return !cls.includes('input') && !cls.includes('editor');
+    });
+
+    if (turns.length > 0) {
+      const lastTurn = turns[turns.length - 1]!;
+      // 优先在当前轮次内部寻找非思维链的正式回复 markdown 容器
+      const mdElements = Array.from(
+        lastTurn.querySelectorAll<HTMLElement>('.ds-markdown, div[class*="ds-markdown"], div[class*="markdown-body"]')
+      ).filter((el) => {
+        const isThinking = el.closest('div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]') !== null;
+        return !isThinking;
+      });
+
+      if (mdElements.length > 0) {
+        return mdElements[mdElements.length - 1]!;
+      }
+      return lastTurn;
+    }
+
+    // 2. 降级：全量查找所有非思维链折叠块的 .ds-markdown
+    const allMarkdown = Array.from(
+      document.querySelectorAll<HTMLElement>('.ds-markdown, div[class*="ds-markdown"]')
+    ).filter((el) => el.closest('div[class*="think"], div[class*="thought"], div[class*="reasoning"]') === null);
+
+    if (allMarkdown.length > 0) {
+      return allMarkdown[allMarkdown.length - 1] ?? null;
+    }
+
+    return null;
   }
 
   private sleep(ms: number): Promise<void> {
