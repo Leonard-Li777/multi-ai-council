@@ -190,6 +190,12 @@ export class GeminiAdapter implements AISiteAdapter {
           // domToMarkdown 失败时降级纯文本
         }
 
+        // 核心防护：若当前内容完全属于思考块或少于 15 字符的占位模型名，返回空以保持侦测
+        const { cleaned } = stripThinkBlocks(result);
+        if (cleaned.length === 0) {
+          return '';
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -201,7 +207,7 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 2500,
+      silenceThresholdMs: 4500,
     });
 
     this.activeDetector.start(chatContainer);
@@ -333,10 +339,18 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有真正的 model-response 消息卡片（严格排除 footer/header/toolbar，杜绝误命中底部状态条）
+    // 1. 优先精确定位 Gemini 专属的自定义标签 <message-content>（包含实质正文者优先）
+    const msgContents = Array.from(document.querySelectorAll<HTMLElement>('message-content')).filter(
+      (el) => (el.innerText || el.textContent || '').trim().length > 0
+    );
+    if (msgContents.length > 0) {
+      return msgContents[msgContents.length - 1]!;
+    }
+
+    // 2. 查找所有真正的 model-response 消息卡片（严格排除 footer/header/toolbar/action）
     const modelResponses = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="model-turn"], div[class*="response-container"]'
+        'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="model-turn"]'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
@@ -346,15 +360,18 @@ export class GeminiAdapter implements AISiteAdapter {
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
       const contentEl = last.querySelector<HTMLElement>(
-        'message-content, div.markdown, div[class*="markdown"], div[class*="model-response-text"], div[class*="response-container-content"]'
+        'message-content, div.markdown, div[class*="markdown"], div[class*="model-response-text"]'
       );
-      return contentEl || last;
+      if (contentEl && (contentEl.innerText || contentEl.textContent || '').trim().length > 0) {
+        return contentEl;
+      }
+      return last;
     }
 
-    // 2. 降级选择器：直接寻找页面上的 message-content 正文
+    // 3. 降级：直接寻找页面上的 markdown 主面板
     const contents = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'message-content, div[class*="model-response-text"], div[class*="markdown-main-panel"]'
+        'div[class*="model-response-text"], div[class*="markdown-main-panel"], div.markdown'
       )
     );
     if (contents.length > 0) {

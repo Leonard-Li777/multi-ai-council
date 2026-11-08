@@ -287,6 +287,13 @@ export class QwenAdapter implements AISiteAdapter {
 
         const md = domToMarkdown(lastMsgEl);
         const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        
+        // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠），正文为 0，返回空以令 Detector 保持守候
+        const { cleaned } = stripThinkBlocks(result);
+        if (cleaned.length === 0) {
+          return '';
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -454,6 +461,13 @@ export class QwenAdapter implements AISiteAdapter {
       const mdEl = lastTurn.querySelector<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
       if (mdEl && (mdEl.textContent || '').trim().length > 0) {
         return mdEl;
+      }
+      // 检查 lastTurn 自身是否仅包含思考状态（如“已经完成思考”或思考折叠容器）
+      const rawText = (lastTurn.innerText || lastTurn.textContent || '').trim();
+      const { cleaned } = stripThinkBlocks(rawText);
+      if (cleaned.length === 0) {
+        // 尚未出现真正正文，返回 null 等待 DOM 变动
+        return null;
       }
       return lastTurn;
     }

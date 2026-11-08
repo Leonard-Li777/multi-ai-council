@@ -41,6 +41,35 @@ export interface AdapterBridgeResult {
  * 统一仲裁，翻译为 Content Script 现有 PortMessage 契约（STREAM_UPDATE / STATUS_CHANGE）。
  * 实现网络高速捕获与 DOM 终极完成判定的双保险互锁。
  */
+function isThinkingOnly(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[\s\.\:\…\-\_\,\，\。\(\)\（\）\【\】\[\]]/g, '');
+  if (!t) return true;
+  return (
+    t === '正在思考' ||
+    t === '思考中' ||
+    t === '深度思考中' ||
+    t === '已完成思考' ||
+    t === '已经完成思考' ||
+    t === '思考完成' ||
+    t === '思考完毕' ||
+    t === '思考过程' ||
+    t === 'thinking' ||
+    t === 'thought' ||
+    t === 'reasoning' ||
+    t === 'thinkingprocess' ||
+    t === 'thoughtprocess' ||
+    t === '正在思考中' ||
+    t === '正在生成' ||
+    (t.includes('完成思考') && t.length <= 25) ||
+    (t.includes('思考过程') && t.length <= 25) ||
+    (t.startsWith('正在思考') && t.length <= 25) ||
+    (t.startsWith('深度思考') && t.length <= 25) ||
+    (t.startsWith('thoughtfor') && t.length <= 30) ||
+    (t.startsWith('thinking') && t.length <= 25) ||
+    (t.includes('思考') && t.length <= 15)
+  );
+}
+
 export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridgeResult {
   const { siteName, jobId, sendFn, url, prompt = '', onDomFallback, checkDomHasContent } = options;
 
@@ -48,6 +77,10 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
   let accumulatedSnapshot = '';
   let fallbackTriggered = false;
   let hasCompleted = false;
+  let lastLoggedNetLen = 0;
+  let lastLoggedNetTime = 0;
+  let lastLoggedDomLen = 0;
+  let lastLoggedDomTime = 0;
 
   const triggerFallbackOnce = (reason: string) => {
     if (fallbackTriggered) return;
@@ -66,7 +99,19 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       if (hasCompleted) return;
       accumulatedSnapshot = text;
       const { cleaned } = stripThinkBlocks(text);
-      flightRecorder.info(siteName, 'NET_STREAM_UPDATE', { length: text.length, jobId });
+
+      // 抽样记录流式进度：首次打字必记，之后每跨越 2000 字或每隔 4 秒记录一次，杜绝海量 SSE 帧刷屏
+      const now = Date.now();
+      if (
+        lastLoggedNetLen === 0 ||
+        text.length - lastLoggedNetLen >= 2000 ||
+        now - lastLoggedNetTime >= 4000
+      ) {
+        lastLoggedNetLen = text.length;
+        lastLoggedNetTime = now;
+        flightRecorder.info(siteName, 'NET_STREAM_UPDATE', { length: text.length, jobId });
+      }
+
       sendFn({
         type: 'STREAM_UPDATE',
         payload: {
@@ -144,7 +189,18 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       if (hasCompleted) return;
       // 若网络层尚未吐出有效字词（如 Gemini/Wenxin 等网络拦截未捕获或前导耗时），用 DOM 推流保证界面响应
       if (accumulatedSnapshot.trim().length === 0 && snapshot.trim().length > 0) {
-        flightRecorder.info(siteName, 'DOM_STREAM_UPDATE', { length: snapshot.length, jobId });
+        // 里程碑与时间窗口抽样打点，避免 500ms 轮询刷爆全局流水
+        const now = Date.now();
+        if (
+          lastLoggedDomLen === 0 ||
+          snapshot.length - lastLoggedDomLen >= 1000 ||
+          now - lastLoggedDomTime >= 4000
+        ) {
+          lastLoggedDomLen = snapshot.length;
+          lastLoggedDomTime = now;
+          flightRecorder.info(siteName, 'DOM_STREAM_UPDATE', { length: snapshot.length, jobId });
+        }
+
         sendFn({
           type: 'STREAM_UPDATE',
           payload: {
@@ -160,14 +216,23 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
 
     handleDomDone: (finalCleaned: string, conversationUrl?: string) => {
       if (hasCompleted) return;
+
+      const netLen = accumulatedSnapshot.trim().length;
+      const domLen = finalCleaned.trim().length;
+      const isPureThinking = isThinkingOnly(finalCleaned);
+
+      // 核心防早熟收敛门禁：若 DOM 与网络提取总字数极短 (<15字且网络无内容)，或内容完全为思考占位词，坚决拒绝提前终结！
+      if (netLen === 0 && (domLen < 15 || isPureThinking)) {
+        flightRecorder.warn(siteName, 'DOM_PREMATURE_REJECTED', { domLen, netLen, jobId, isPureThinking });
+        return;
+      }
+
       hasCompleted = true;
 
       // 智能裁决内容：
       // 若网络层内容较为充沛（>30字且不明显小于 DOM 内容），优先采纳网络纯净文本；
       // 否则以 DOM 提取文本兜底收敛。
       let selectedText = accumulatedSnapshot;
-      const netLen = accumulatedSnapshot.trim().length;
-      const domLen = finalCleaned.trim().length;
       let chosenBy = 'NETWORK';
 
       if (netLen < 30 || (domLen > 60 && netLen < domLen * 0.4)) {

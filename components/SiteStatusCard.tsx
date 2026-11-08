@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import type { ProviderRun, ProviderStatus } from '../lib/types/review-job';
+import { stripThinkBlocks } from '../lib/utils/think-block-strip';
 import DOMPurify from 'dompurify';
 import {
   Loader2,
@@ -56,9 +57,14 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
 }) => {
   const status = run?.status || 'PENDING';
   const cfg = STATUS_CONFIG[status];
-  const responseText = run?.cleanedResponse || run?.responseSnapshot || '';
+  // 严格正文解析：优先使用已剥离思考块的 cleanedResponse；若退化至 responseSnapshot，必须同样经由 stripThinkBlocks 剥离思考占位
+  let effectiveText = (run?.cleanedResponse || '').trim();
+  if (!effectiveText && run?.responseSnapshot) {
+    const { cleaned } = stripThinkBlocks(run.responseSnapshot);
+    effectiveText = cleaned.trim();
+  }
   // 纯文本简单安全展示，防止脚本注入并去除任何非法标记
-  const sanitizedPreview = DOMPurify.sanitize(responseText);
+  const sanitizedPreview = DOMPurify.sanitize(effectiveText);
   // 字数统计以净化后实际可见内容为准，杜绝未剥离内联标签导致显示虚高
   const charCount = sanitizedPreview.length;
   const [copied, setCopied] = useState(false);
@@ -75,9 +81,9 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
 
   const handleCopy = async (e?: React.MouseEvent) => {
     e?.stopPropagation();
-    if (!responseText) return;
+    if (!effectiveText) return;
     try {
-      await navigator.clipboard.writeText(responseText);
+      await navigator.clipboard.writeText(effectiveText);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -288,7 +294,11 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
             </div>
           ) : (
             <div className="text-[11px] text-slate-400 italic py-1">
-              {status === 'STREAMING' ? '正在接收实时内容...' : '暂无回答内容'}
+              {status === 'STREAMING'
+                ? run?.responseSnapshot && run.responseSnapshot.length > 0
+                  ? '💭 正在深度思考中，静待正文吐出...'
+                  : '正在接收实时内容...'
+                : '暂无回答内容'}
             </div>
           )}
         </div>

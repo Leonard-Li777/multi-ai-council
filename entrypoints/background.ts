@@ -63,12 +63,16 @@ export default defineBackground(() => {
 
   const SESSION_COUNCIL_GROUP_KEY = 'MULTI_AI_COUNCIL_GROUP_ID';
   let groupingMutex: Promise<number | null> | null = null;
+  let inMemoryCouncilGroupId: number | null = null;
 
   /**
    * 监听标签组手动解散或关闭事件，及时清除 session 状态
    */
   if (chrome.tabGroups?.onRemoved) {
     chrome.tabGroups.onRemoved.addListener((group) => {
+      if (inMemoryCouncilGroupId === group.id) {
+        inMemoryCouncilGroupId = null;
+      }
       chrome.storage?.session?.get(SESSION_COUNCIL_GROUP_KEY).then((data) => {
         if (data && data[SESSION_COUNCIL_GROUP_KEY] === group.id) {
           chrome.storage.session.remove(SESSION_COUNCIL_GROUP_KEY).catch(() => {});
@@ -81,7 +85,34 @@ export default defineBackground(() => {
    * 原子化获取或创建统一的 Multi-AI Council 标签组（以 session 为唯一持久事实源，杜绝 SW 回收后重复建组）
    */
   async function getOrCreateCouncilGroupId(anchorTabId: number): Promise<number | null> {
-    // 1. 优先从 chrome.storage.session 恢复（SW 30s 回收后幂等自愈）
+    // 0. 优先使用进程内存缓存，若依然存活有效则直接复用
+    if (inMemoryCouncilGroupId !== null && chrome.tabGroups?.get) {
+      try {
+        const g = await chrome.tabGroups.get(inMemoryCouncilGroupId);
+        if (g && g.id !== undefined) return g.id;
+      } catch {
+        inMemoryCouncilGroupId = null;
+      }
+    }
+
+    // 1. 优先从 anchorTab 自身或当前窗口已有 tabs 嗅探是否已有 Council 分组
+    try {
+      if (chrome.tabs?.get) {
+        const anchor = await chrome.tabs.get(anchorTabId);
+        if (anchor && anchor.groupId !== undefined && anchor.groupId > 0) {
+          const g = await chrome.tabGroups.get(anchor.groupId);
+          if (g && (g.title === 'Multi-AI Council' || g.title?.trim().toLowerCase() === 'multi-ai council')) {
+            inMemoryCouncilGroupId = g.id;
+            if (chrome.storage?.session) {
+              await chrome.storage.session.set({ [SESSION_COUNCIL_GROUP_KEY]: g.id }).catch(() => {});
+            }
+            return g.id;
+          }
+        }
+      }
+    } catch {}
+
+    // 2. 优先从 chrome.storage.session 恢复（SW 30s 回收后幂等自愈）
     let cachedId: number | null = null;
     try {
       if (chrome.storage?.session) {
@@ -92,11 +123,12 @@ export default defineBackground(() => {
       }
     } catch {}
 
-    // 2. 校验缓存的 groupId 是否在当前浏览器窗口仍然存活有效
+    // 3. 校验缓存的 groupId 是否在当前浏览器窗口仍然存活有效
     if (cachedId !== null && chrome.tabGroups?.get) {
       try {
         const group = await chrome.tabGroups.get(cachedId);
         if (group && group.id !== undefined) {
+          inMemoryCouncilGroupId = group.id;
           return group.id;
         }
       } catch {
@@ -107,7 +139,7 @@ export default defineBackground(() => {
       }
     }
 
-    // 3. 全局扫描所有当前活动的分组（直接全量 query，避开各版本 Chrome 对特定 query 过滤属性的兼容性差异）
+    // 4. 全局扫描所有当前活动的分组（直接全量 query，避开各版本 Chrome 对特定 query 过滤属性的兼容性差异）
     if (chrome.tabGroups?.query) {
       try {
         const allGroups = await chrome.tabGroups.query({});
@@ -115,6 +147,7 @@ export default defineBackground(() => {
           (g) => g.title === 'Multi-AI Council' || g.title?.trim().toLowerCase() === 'multi-ai council'
         );
         if (existing && existing.id !== undefined) {
+          inMemoryCouncilGroupId = existing.id;
           if (chrome.storage?.session) {
             await chrome.storage.session.set({ [SESSION_COUNCIL_GROUP_KEY]: existing.id }).catch(() => {});
           }
@@ -123,7 +156,7 @@ export default defineBackground(() => {
       } catch {}
     }
 
-    // 4. 当前浏览器确实不存在任何 Council 标签组，以 anchorTabId 作为种子建立唯一的全局分组并着色
+    // 5. 当前浏览器确实不存在任何 Council 标签组，以 anchorTabId 作为种子建立唯一的全局分组并着色
     try {
       const newGroupId = (await chrome.tabs.group({ tabIds: [anchorTabId] })) as unknown as number;
       if (typeof newGroupId === 'number' && !isNaN(newGroupId)) {
@@ -133,6 +166,7 @@ export default defineBackground(() => {
             color: 'blue',
           }).catch(() => {});
         }
+        inMemoryCouncilGroupId = newGroupId;
         if (chrome.storage?.session) {
           await chrome.storage.session.set({ [SESSION_COUNCIL_GROUP_KEY]: newGroupId }).catch(() => {});
         }
@@ -603,6 +637,12 @@ export default defineBackground(() => {
     }
     startingJobId = job.id;
     console.log('[Background] handleStartJob started for job:', job.id);
+    flightRecorder.info('Background', 'JOB_START', {
+      jobId: job.id,
+      promptPreview: job.originalPrompt.slice(0, 30),
+      siteCount: job.aggregationPolicy.enabledSites.length,
+      sites: job.aggregationPolicy.enabledSites,
+    });
     await saveActiveJob(job);
     broadcastJobSync(job);
 
@@ -673,6 +713,11 @@ export default defineBackground(() => {
   }
 
   async function ensureSiteTabAndDispatch(siteName: SupportedSite, job: ReviewJob) {
+    flightRecorder.info('Background', 'ENSURE_TAB_DISPATCH_INIT', {
+      siteName,
+      jobId: job.id,
+      isContinuation: job.isContinuation,
+    });
     // 0. 读取历史会话引用并解析目标分发 URL
     const existingRef = await getConversationRef(siteName);
     const targetUrl = getTargetDispatchUrl(siteName, job.isContinuation, existingRef || undefined);
@@ -711,7 +756,7 @@ export default defineBackground(() => {
 
     if (targetTab && targetTab.id !== undefined) {
       siteTabs.set(siteName, targetTab.id);
-      ensureTabInCouncilGroup(targetTab.id).catch(() => {});
+      await ensureTabInCouncilGroup(targetTab.id).catch(() => {});
 
       // 若需要延续特定远程会话且不在对应会话 URL，才尝试导航
       if (job.isContinuation && existingRef?.conversationUrl && targetTab.url && targetTab.url !== existingRef.conversationUrl) {
@@ -832,13 +877,30 @@ export default defineBackground(() => {
 
     if (dispatched) {
       flightRecorder.info(siteName, 'DISPATCH_SUCCESS', { jobId, channel: port ? 'PORT' : 'MESSAGE' });
+      flightRecorder.info('Background', 'DISPATCH_SENT', { siteName, jobId, channel: port ? 'PORT' : 'MESSAGE' });
       // 成功派发，状态立即推进为 SENDING，消除 UI 卡死在“等待就绪”
       const updated = await updateProviderRun(jobId, siteName, {
         status: 'SENDING',
       });
       broadcastJobSync(updated);
+
+      // 健壮防护：若站点进入 SENDING 达到 25 秒仍未响应转为 STREAMING 或 DONE，自动超时标记避免挂死
+      setTimeout(async () => {
+        const curJob = await getActiveJob();
+        if (curJob?.id === jobId && curJob.providerRuns[siteName]?.status === 'SENDING') {
+          console.warn(`[Background] Site ${siteName} hung in SENDING for 25s, auto-failing to unblock`);
+          flightRecorder.warn(siteName, 'SENDING_TIMEOUT_AUTORECOVER', { jobId });
+          const failedJob = await updateProviderRun(jobId, siteName, {
+            status: 'FAILED',
+            errorReason: `${siteName} 提交超时未响应，请点击卡片重试`,
+          });
+          broadcastJobSync(failedJob);
+          await checkAutoTriggerSynthesis(jobId);
+        }
+      }, 25000);
     } else {
       flightRecorder.warn(siteName, 'DISPATCH_WAITING', { jobId });
+      flightRecorder.warn('Background', 'DISPATCH_WAITING', { siteName, jobId });
       console.warn(`[Background] Could not dispatch to ${siteName} immediately, waiting for ready event`);
     }
   }

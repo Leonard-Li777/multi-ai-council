@@ -23,17 +23,25 @@ export class QuadSignalDoneDetector {
   private isCompleted = false;
   private observer: MutationObserver | null = null;
   private pollInterval: number | null = null;
+  // 是否真正进入过生成态（见过停止按钮，或内容产生过明显递增）
+  private hasEverGenerated = false;
+  private initialContentLength = 0;
+  private startTime = Date.now();
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
-      silenceThresholdMs: 2500,
+      silenceThresholdMs: 4500,
       ...options,
     };
   }
 
   public start(targetElement: HTMLElement) {
     this.isCompleted = false;
-    this.lastContentLength = 0;
+    this.hasEverGenerated = false;
+    this.startTime = Date.now();
+    const initial = this.options.getCurrentContent().trim();
+    this.initialContentLength = initial.length;
+    this.lastContentLength = this.initialContentLength;
 
     // 1. 启动 DOM Mutation 监听
     this.observer = new MutationObserver(() => {
@@ -75,8 +83,9 @@ export class QuadSignalDoneDetector {
     const stopBtn = this.options.getStopButton();
     const isGenerating = stopBtn !== null && isVisible(stopBtn);
 
-    // 信号 1：若仍有停止按钮，坚决不判定完成
+    // 关键状态记录：一旦看见可见的停止按钮，确立进入过生成态
     if (isGenerating) {
+      this.hasEverGenerated = true;
       if (this.silenceTimer) {
         window.clearTimeout(this.silenceTimer);
         this.silenceTimer = null;
@@ -86,6 +95,11 @@ export class QuadSignalDoneDetector {
 
     const content = this.options.getCurrentContent();
     const currentLen = content.trim().length;
+
+    // 确认生成增长：若内容相比启动初始增加了 50 字符以上，确立进入过生成态
+    if (currentLen - this.initialContentLength >= 50) {
+      this.hasEverGenerated = true;
+    }
 
     // 若还没产生任何内容，等待
     if (currentLen === 0) return;
@@ -99,10 +113,20 @@ export class QuadSignalDoneDetector {
       return;
     }
 
+    // 核心防早熟门禁（防 15/23 字误裁决）：
+    // 若当前字数极短（< 60字），且尚未真正经历过生成态，这必定是 TTFT 排队、骨架屏或思考头，严禁短静默触发完成！
+    const elapsedMs = Date.now() - this.startTime;
+    if (currentLen < 60 && !this.hasEverGenerated && elapsedMs < 20000) {
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      return;
+    }
+
     // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= silenceThresholdMs 即判定完成）
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
-      flightRecorder.info('System', 'SILENCE_TIMER_START', { len: currentLen, ms: this.options.silenceThresholdMs });
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
         // 再次确认内容长度稳定、非思考占位词、且停止按钮确实不存在
@@ -112,6 +136,14 @@ export class QuadSignalDoneDetector {
           !isThinkingOnly(latestContent) &&
           !isVisible(this.options.getStopButton())
         ) {
+          // 双重确认：极短内容必须满足安全宽限时间或发送按钮恢复就绪
+          const sendBtn = this.options.getSendButton();
+          const isSendActive = sendBtn !== null && !sendBtn.hasAttribute('disabled') && sendBtn.getAttribute('aria-disabled') !== 'true';
+          if (latestContent.trim().length < 60 && !isSendActive && Date.now() - this.startTime < 20000) {
+            this.silenceTimer = null;
+            return;
+          }
+
           flightRecorder.info('System', 'SILENCE_TIMER_TRIGGERED_DONE', { finalLen: latestContent.length });
           this.markDone(latestContent);
         } else {
@@ -151,16 +183,30 @@ function isVisible(el: HTMLElement | null): boolean {
 }
 
 function isThinkingOnly(text: string): boolean {
-  const t = text.trim().toLowerCase().replace(/[\s\.\:\…\-\_\,\，\。]/g, '');
+  const t = text.trim().toLowerCase().replace(/[\s\.\:\…\-\_\,\，\。\(\)\（\）\【\】\[\]]/g, '');
+  if (!t) return true;
   return (
     t === '正在思考' ||
     t === '思考中' ||
     t === '深度思考中' ||
+    t === '已完成思考' ||
+    t === '已经完成思考' ||
+    t === '思考完成' ||
+    t === '思考完毕' ||
+    t === '思考过程' ||
     t === 'thinking' ||
     t === 'thought' ||
     t === 'reasoning' ||
+    t === 'thinkingprocess' ||
+    t === 'thoughtprocess' ||
     t === '正在思考中' ||
     t === '正在生成' ||
-    (t.startsWith('正在思考') && t.length <= 8)
+    (t.includes('完成思考') && t.length <= 25) ||
+    (t.includes('思考过程') && t.length <= 25) ||
+    (t.startsWith('正在思考') && t.length <= 25) ||
+    (t.startsWith('深度思考') && t.length <= 25) ||
+    (t.startsWith('thoughtfor') && t.length <= 30) ||
+    (t.startsWith('thinking') && t.length <= 25) ||
+    (t.includes('思考') && t.length <= 15)
   );
 }
