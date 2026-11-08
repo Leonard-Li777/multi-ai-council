@@ -3,6 +3,7 @@ import { qwenAdapter } from '../lib/adapters/qwen.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
 import { NetworkListener } from '../lib/interceptor/network-listener';
 import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
+import { stripThinkBlocks } from '../lib/utils/think-block-strip';
 
 export default defineContentScript({
   matches: ['https://chat.qwen.ai/*'],
@@ -170,10 +171,15 @@ export default defineContentScript({
               });
             },
             (finalCleaned) => {
+              const { cleaned: sanitized } = stripThinkBlocks(finalCleaned);
+              if (!sanitized || sanitized.length < 15) {
+                console.warn('[QwenContent] Suppressing premature recovery completion with insufficient content');
+                return;
+              }
               const finalUrl = qwenAdapter.getConversationUrl();
               send({
                 type: 'STREAM_UPDATE',
-                payload: { siteName: 'Qwen', jobId, snapshot: finalCleaned, cleaned: finalCleaned, isFinished: true },
+                payload: { siteName: 'Qwen', jobId, snapshot: sanitized, cleaned: sanitized, isFinished: true },
               });
               send({
                 type: 'STATUS_CHANGE',

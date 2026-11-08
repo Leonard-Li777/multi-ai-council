@@ -29,8 +29,26 @@ export function stripThinkBlocks(rawText: string): { cleaned: string; thinkConte
   // 3. 针对部分站点自定义的 class 如 .think-container 或折叠面板
   cleaned = cleaned.replace(/【思考过程】[\s\S]*?【思考结束】/gi, '').trim();
 
-  // 4. 清除类似“已经完成思考”、“Thought for x seconds”等独立思考头部标记
-  cleaned = cleaned.replace(/^(已经完成思考|思考完成|思考中\.\.\.|Thought for \d+ seconds?)\s*/i, '').trim();
+  // 4. 清除类似“已经完成思考”、“Thought for x seconds”等独立思考头部标记与折叠栏
+  cleaned = cleaned.replace(/^(>|\*|#|\s)*(已经完成思考|思考完成|思考完毕|思考中\.\.\.|已深度思考[^\n]*|Thought for \d+ seconds?)\s*/i, '').trim();
+
+  // 5. 核心兜底：若经过剥离后，剩余内容仅为思考占位词（如“已经完成思考”或“思考过程”），直接将 cleaned 彻底置空
+  const normalized = cleaned.trim().toLowerCase().replace(/[\s\.\:\…\-\_\,\，\。\(\)\（\）\【\】\[\]\>\#\*]/g, '');
+  if (
+    normalized === '已经完成思考' ||
+    normalized === '已完成思考' ||
+    normalized === '思考完成' ||
+    normalized === '思考中' ||
+    normalized === '正在思考' ||
+    normalized === '深度思考中' ||
+    normalized === '思考过程' ||
+    normalized === 'thinking' ||
+    normalized === 'thought' ||
+    (normalized.includes('完成思考') && normalized.length <= 25) ||
+    (normalized.includes('思考') && normalized.length <= 15)
+  ) {
+    cleaned = '';
+  }
 
   return {
     cleaned,

@@ -126,6 +126,9 @@ export class WenxinAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled || hasDisabledClass;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
+      sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
       flightRecorder.info('Wenxin', 'SEND_BUTTON_CLICKED');
       await this.sleep(200);
     } else {
@@ -263,20 +266,24 @@ export class WenxinAdapter implements AISiteAdapter {
 
   private findSendButton(): HTMLElement | null {
     const direct = document.querySelector<HTMLElement>(
-      'span[class*="sendBtn"], div[class*="sendBtn"], span[class*="send_btn"], div[class*="send_btn"], div[class*="send-btn"], span[class*="send-btn"], button[class*="send"], div[class*="enter-btn"], span[class*="submit"], div[class*="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"]'
+      'span[class*="sendBtn"], div[class*="sendBtn"], span[class*="send_btn"], div[class*="send_btn"], div[class*="send-btn"], span[class*="send-btn"], button[class*="send"], div[class*="enter-btn"], span[class*="submit"], div[class*="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"], div[class*="operate-btn"]'
     );
     if (direct) return direct;
 
     const input = this.findInputElement();
-    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="footer"], div[class*="bottom"]') as HTMLElement | null) : null;
-    if (container) {
-      const candidates = Array.from(container.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button'));
-      const candidate = candidates.reverse().find(b => {
+    let parent = input?.parentElement;
+    for (let i = 0; i < 6 && parent; i++) {
+      const candidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button'));
+      const candidate = candidates.reverse().find((b) => {
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-        if (aria.includes('file') || aria.includes('upload') || aria.includes('plugin')) return false;
-        return b.querySelector('svg') !== null;
+        const cls = (b.className || '').toLowerCase();
+        if (aria.includes('file') || aria.includes('upload') || aria.includes('plugin') || cls.includes('upload')) {
+          return false;
+        }
+        return b.querySelector('svg') !== null || cls.includes('send') || cls.includes('submit') || cls.includes('enter');
       });
       if (candidate) return candidate;
+      parent = parent.parentElement;
     }
     return null;
   }

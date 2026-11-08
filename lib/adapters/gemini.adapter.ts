@@ -180,9 +180,22 @@ export class GeminiAdapter implements AISiteAdapter {
           }
         }
 
-        let result = currentText;
+        // 核心：若获取到的是包含整个回答的卡片容器，通过克隆并将底部的工具栏、操作按钮等剔除，完整保留整篇长回答
+        let targetEl = lastMsgEl;
+        const noisyNodes = targetEl.querySelectorAll(
+          'div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button'
+        );
+        if (noisyNodes.length > 0) {
+          const clone = targetEl.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button')
+            .forEach((n) => n.remove());
+          targetEl = clone;
+        }
+
+        let result = (targetEl.innerText || targetEl.textContent || '').trim();
         try {
-          const md = domToMarkdown(lastMsgEl);
+          const md = domToMarkdown(targetEl);
           if (md && md.trim().length > 0) {
             result = md;
           }
@@ -339,15 +352,7 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 优先精确定位 Gemini 专属的自定义标签 <message-content>（包含实质正文者优先）
-    const msgContents = Array.from(document.querySelectorAll<HTMLElement>('message-content')).filter(
-      (el) => (el.innerText || el.textContent || '').trim().length > 0
-    );
-    if (msgContents.length > 0) {
-      return msgContents[msgContents.length - 1]!;
-    }
-
-    // 2. 查找所有真正的 model-response 消息卡片（严格排除 footer/header/toolbar/action）
+    // 1. 查找所有 model-response 消息卡片（严格排除独立的 footer/header/toolbar）
     const modelResponses = Array.from(
       document.querySelectorAll<HTMLElement>(
         'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="model-turn"]'
@@ -359,16 +364,42 @@ export class GeminiAdapter implements AISiteAdapter {
 
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
-      const contentEl = last.querySelector<HTMLElement>(
-        'message-content, div.markdown, div[class*="markdown"], div[class*="model-response-text"]'
+      // 优先在最新轮次内部查找包含全量段落的内容容器（包含所有 message-content 与代码块）
+      const contentContainer = last.querySelector<HTMLElement>(
+        'div.response-container-content, div[class*="response-container-content"], div[class*="response-content"], div[class*="markdown-main-panel"]'
       );
-      if (contentEl && (contentEl.innerText || contentEl.textContent || '').trim().length > 0) {
-        return contentEl;
+      if (contentContainer && (contentContainer.innerText || contentContainer.textContent || '').trim().length > 0) {
+        return contentContainer;
       }
       return last;
     }
 
-    // 3. 降级：直接寻找页面上的 markdown 主面板
+    // 2. 降级：直接寻找页面上的 response-container-content 容器
+    const responseContents = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div.response-container-content, div[class*="response-container-content"], div[class*="response-content"]'
+      )
+    );
+    if (responseContents.length > 0) {
+      return responseContents[responseContents.length - 1] ?? null;
+    }
+
+    // 3. 降级：若有外层的 message-content 父级容器，返回其共同的轮次容器，防止被单段截断
+    const allMsgContents = Array.from(document.querySelectorAll<HTMLElement>('message-content')).filter(
+      (el) => (el.innerText || el.textContent || '').trim().length > 0
+    );
+    if (allMsgContents.length > 0) {
+      const lastContent = allMsgContents[allMsgContents.length - 1]!;
+      const parentTurn = lastContent.closest<HTMLElement>(
+        'model-response, div[class*="response-container"], div[class*="model-response"]'
+      );
+      if (parentTurn) {
+        return parentTurn;
+      }
+      return lastContent;
+    }
+
+    // 4. 降级：直接寻找页面上的 markdown 主面板
     const contents = Array.from(
       document.querySelectorAll<HTMLElement>(
         'div[class*="model-response-text"], div[class*="markdown-main-panel"], div.markdown'

@@ -285,8 +285,16 @@ export class QwenAdapter implements AISiteAdapter {
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        // DOM 克隆净化：彻底剔除思考折叠块、工具栏与各类操作按钮
+        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+        clone
+          .querySelectorAll(
+            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], div[class*="collapse"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], button, [role="toolbar"]'
+          )
+          .forEach((el) => el.remove());
+
+        const md = domToMarkdown(clone);
+        const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
         
         // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠），正文为 0，返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
@@ -294,8 +302,8 @@ export class QwenAdapter implements AISiteAdapter {
           return '';
         }
 
-        this.currentSnapshot = result;
-        return result;
+        this.currentSnapshot = cleaned;
+        return cleaned;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -457,11 +465,33 @@ export class QwenAdapter implements AISiteAdapter {
 
     if (turns.length > 0) {
       const lastTurn = turns[turns.length - 1]!;
-      // 优先在轮次内部匹配真正的正文 markdown 容器，绝不误选思考状态卡片
-      const mdEl = lastTurn.querySelector<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
-      if (mdEl && (mdEl.textContent || '').trim().length > 0) {
-        return mdEl;
+      // 深度思考防护：检查 lastTurn 内所有的 markdown 容器，严格剔除思考折叠块
+      const allMdEls = Array.from(
+        lastTurn.querySelectorAll<HTMLElement>(
+          'div.qwen-markdown, div.markdown-body, div[class*="markdown"], div[class*="content"]'
+        )
+      ).filter((el) => {
+        const cls = (el.className || '').toLowerCase();
+        const parentCls = (el.parentElement?.className || '').toLowerCase();
+        const isThink =
+          cls.includes('think') ||
+          cls.includes('reason') ||
+          cls.includes('thought') ||
+          cls.includes('collapse') ||
+          parentCls.includes('think') ||
+          parentCls.includes('reason');
+        return !isThink;
+      });
+
+      for (let i = allMdEls.length - 1; i >= 0; i--) {
+        const candidate = allMdEls[i]!;
+        const text = (candidate.innerText || candidate.textContent || '').trim();
+        const { cleaned } = stripThinkBlocks(text);
+        if (cleaned.length > 0) {
+          return candidate;
+        }
       }
+
       // 检查 lastTurn 自身是否仅包含思考状态（如“已经完成思考”或思考折叠容器）
       const rawText = (lastTurn.innerText || lastTurn.textContent || '').trim();
       const { cleaned } = stripThinkBlocks(rawText);

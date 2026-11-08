@@ -57,9 +57,12 @@ export const SiteStatusCard: React.FC<SiteStatusCardProps> = ({
 }) => {
   const status = run?.status || 'PENDING';
   const cfg = STATUS_CONFIG[status];
-  // 严格正文解析：优先使用已剥离思考块的 cleanedResponse；若退化至 responseSnapshot，必须同样经由 stripThinkBlocks 剥离思考占位
+  // 严格正文解析：优先使用已剥离思考块的 cleanedResponse；必须始终经由 stripThinkBlocks 剥离思考占位
   let effectiveText = (run?.cleanedResponse || '').trim();
-  if (!effectiveText && run?.responseSnapshot) {
+  if (effectiveText) {
+    const { cleaned } = stripThinkBlocks(effectiveText);
+    effectiveText = cleaned.trim();
+  } else if (run?.responseSnapshot) {
     const { cleaned } = stripThinkBlocks(run.responseSnapshot);
     effectiveText = cleaned.trim();
   }

@@ -133,22 +133,23 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
 
         case 'DONE': {
           if (hasCompleted) return;
-          // 关键防空门禁：若网络层虽已 DONE 但提取的正文为空（如 DeepSeek/Wenxin 字段漂移），立即回退 DOM
-          if (accumulatedSnapshot.trim().length === 0) {
-            triggerFallbackOnce('network stream finished with empty content');
+          const { cleaned: netCleaned } = stripThinkBlocks(accumulatedSnapshot);
+          const isNetThinking = isThinkingOnly(accumulatedSnapshot) || isThinkingOnly(netCleaned);
+          // 关键防空与思考占位门禁：若网络层虽已 DONE 但提取的正文为空或纯为思考占位词，立即回退 DOM 守候真正回答
+          if (accumulatedSnapshot.trim().length === 0 || netCleaned.trim().length === 0 || isNetThinking) {
+            triggerFallbackOnce('network stream finished with empty or thinking placeholder content');
             return;
           }
 
           hasCompleted = true;
           flightRecorder.info(siteName, 'NET_DONE_CONVERGED', { length: accumulatedSnapshot.length, jobId });
-          const { cleaned } = stripThinkBlocks(accumulatedSnapshot);
           sendFn({
             type: 'STREAM_UPDATE',
             payload: {
               siteName,
               jobId,
               snapshot: accumulatedSnapshot,
-              cleaned,
+              cleaned: netCleaned,
               isFinished: true,
             },
           });
@@ -217,12 +218,13 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
     handleDomDone: (finalCleaned: string, conversationUrl?: string) => {
       if (hasCompleted) return;
 
+      const { cleaned: sanitizedCleaned } = stripThinkBlocks(finalCleaned);
+      const isPureThinking = isThinkingOnly(finalCleaned) || isThinkingOnly(sanitizedCleaned) || sanitizedCleaned.trim().length === 0;
       const netLen = accumulatedSnapshot.trim().length;
-      const domLen = finalCleaned.trim().length;
-      const isPureThinking = isThinkingOnly(finalCleaned);
+      const domLen = sanitizedCleaned.trim().length;
 
-      // 核心防早熟收敛门禁：若 DOM 与网络提取总字数极短 (<15字且网络无内容)，或内容完全为思考占位词，坚决拒绝提前终结！
-      if (netLen === 0 && (domLen < 15 || isPureThinking)) {
+      // 核心防早熟收敛门禁：若内容完全为思考占位词（如“已经完成思考”），或 DOM 与网络正文字数皆极短 (<15字且网络无充沛内容)，坚决拒绝提前终结！
+      if (isPureThinking || (domLen < 15 && netLen < 30)) {
         flightRecorder.warn(siteName, 'DOM_PREMATURE_REJECTED', { domLen, netLen, jobId, isPureThinking });
         return;
       }
@@ -236,7 +238,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       let chosenBy = 'NETWORK';
 
       if (netLen < 30 || (domLen > 60 && netLen < domLen * 0.4)) {
-        selectedText = finalCleaned;
+        selectedText = sanitizedCleaned;
         chosenBy = 'DOM_SENTINEL';
       }
 
