@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import { adapterRegistry } from '../lib/adapters/base';
 import { deepSeekAdapter } from '../lib/adapters/deepseek.adapter';
@@ -63,5 +64,49 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
 
     const result2 = stripThinkBlocks(chineseMarkerRaw);
     expect(result2.cleaned).toBe('我们推荐采用选项 B。');
+  });
+
+  it('qwenAdapter extracts full message with multiple markdown blocks and disclaimers', () => {
+    document.body.innerHTML = `
+      <div class="message-item-assistant">
+        <div class="qwen-markdown">
+          <p># 规格说明书审查评估报告</p>
+          <p>详细分析第一条：架构完全吻合契约。</p>
+        </div>
+        <div class="qwen-markdown">
+          <p>**声明**：本轮审查已全盘穷尽当前规范。</p>
+        </div>
+      </div>
+    `;
+
+    qwenAdapter.recordBaseline();
+    // Simulate generation of new message
+    document.body.innerHTML += `
+      <div class="message-item-assistant">
+        <div class="qwen-markdown">
+          <p># 第二轮规格说明书审查评估报告</p>
+          <p>详细分析：全量业务逻辑验证完全符合预期，跨越五千字大报告主体内容。</p>
+        </div>
+        <div class="qwen-markdown">
+          <p>**声明**：本轮审查已全盘穷尽当前《E2E Testing & Golden Ground Truth Spec v2.0》。</p>
+        </div>
+      </div>
+    `;
+
+    let capturedDone = '';
+    const stopListener = qwenAdapter.listenGeneration(
+      () => {},
+      (cleaned) => {
+        capturedDone = cleaned;
+      }
+    );
+
+    // Call getCurrentContent through the active detector
+    const detector = (qwenAdapter as any).activeDetector;
+    const current = detector.options.getCurrentContent();
+    expect(current).toContain('第二轮规格说明书审查评估报告');
+    expect(current).toContain('本轮审查已全盘穷尽当前《E2E Testing & Golden Ground Truth Spec v2.0》');
+
+    stopListener();
   });
 });

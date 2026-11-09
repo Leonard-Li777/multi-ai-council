@@ -15,6 +15,7 @@ export class GeminiAdapter implements AISiteAdapter {
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private highWaterMarkSnapshot = '';
   private baselineLastElement: HTMLElement | null = null;
   private baselineLastContent = '';
 
@@ -22,6 +23,7 @@ export class GeminiAdapter implements AISiteAdapter {
     const el = this.findLatestAssistantMessageElement();
     this.baselineLastElement = el;
     this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+    this.highWaterMarkSnapshot = '';
   }
 
   public async isReady(): Promise<boolean> {
@@ -247,6 +249,14 @@ export class GeminiAdapter implements AISiteAdapter {
           return '';
         }
 
+        // Anti-Shrink 高水位快照单调保护：杜绝流式期间 DOM 偶发抖动导致字数逆向回缩
+        if (cleaned.length < this.highWaterMarkSnapshot.length * 0.7) {
+          return this.highWaterMarkSnapshot;
+        }
+        if (cleaned.length > this.highWaterMarkSnapshot.length) {
+          this.highWaterMarkSnapshot = cleaned;
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -379,14 +389,26 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findStopButton(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('button[aria-label*="Stop"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
-      document.querySelector<HTMLElement>('div[role="button"][aria-label*="Stop"]') ||
-      document.querySelector<HTMLElement>('div[role="button"][aria-label*="停止"]') ||
-      document.querySelector<HTMLElement>('button[data-test-id*="stop"]') ||
-      document.querySelector<HTMLElement>('button.stop-button')
+    // 优先在输入区域内查找停止按钮，避免全网页范围误命中非生成相关的静态按钮
+    const input = this.findInputElement();
+    const container = input ? (input.closest('rich-textarea, div[class*="input-area"], div[class*="text-input"], form') as HTMLElement | null) : null;
+    const searchRoot = container || document;
+
+    const stopCandidate = searchRoot.querySelector<HTMLElement>(
+      'button[aria-label*="Stop response"], button[aria-label*="停止回答"], button[aria-label*="Stop generating"], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
     );
+    if (stopCandidate) return stopCandidate;
+
+    // 兜底：若在输入容器内没找到，仅在紧邻区域查找通用 Stop 按钮（必须排除朗读/TTS/音频相关）
+    const generalCandidates = Array.from(
+      searchRoot.querySelectorAll<HTMLElement>(
+        'button[aria-label*="Stop"], button[aria-label*="停止"], div[role="button"][aria-label*="Stop"], div[role="button"][aria-label*="停止"]'
+      )
+    );
+    return generalCandidates.find((el) => {
+      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+      return !aria.includes('listen') && !aria.includes('audio') && !aria.includes('speech') && !aria.includes('朗读');
+    }) || null;
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {

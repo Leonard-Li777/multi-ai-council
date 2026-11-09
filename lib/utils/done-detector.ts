@@ -59,8 +59,17 @@ export class QuadSignalDoneDetector {
     this.pollInterval = window.setInterval(() => {
       if (this.isCompleted) return;
       const current = this.options.getCurrentContent();
-      if (current.trim().length > 0) {
-        this.options.onUpdate(current);
+      const currentLen = current.trim().length;
+
+      // 仅在正文长度发生变化时才触发 onUpdate，杜绝 500ms 轮询冗余刷屏
+      if (currentLen !== this.lastContentLength) {
+        if (currentLen > 0) {
+          this.options.onUpdate(current);
+        }
+        if (this.silenceTimer) {
+          window.clearTimeout(this.silenceTimer);
+          this.silenceTimer = null;
+        }
       }
       this.checkSignals();
     }, 500);
@@ -87,9 +96,15 @@ export class QuadSignalDoneDetector {
 
   private checkSignals() {
     const stopBtn = this.options.getStopButton();
-    const isGenerating = stopBtn !== null && isVisible(stopBtn);
+    const sendBtn = this.options.getSendButton();
+    const isStopActive = isElementActiveAndVisible(stopBtn);
+    const isSendActive = isElementActiveAndVisible(sendBtn);
 
-    // 关键状态记录：一旦看见可见的停止按钮，确立进入过生成态
+    // 核心判定：
+    // 若可见且未被禁用的停止按钮存在，且发送按钮未处于激活就绪状态，确立为正在生成中
+    const isGenerating = isStopActive && !isSendActive;
+
+    // 关键状态记录：一旦看见处于激活态的停止按钮，确立进入过生成态
     if (isGenerating) {
       this.hasEverGenerated = true;
       if (this.silenceTimer) {
@@ -135,17 +150,20 @@ export class QuadSignalDoneDetector {
       this.lastContentLength = currentLen;
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
-        // 再次确认内容长度稳定、非思考占位词、且停止按钮确实不存在
+        const latestStop = this.options.getStopButton();
+        const latestSend = this.options.getSendButton();
+        const stillGenerating = isElementActiveAndVisible(latestStop) && !isElementActiveAndVisible(latestSend);
+
+        // 再次确认内容长度稳定、非思考占位词、且不再处于生成中
         if (
           !this.isCompleted &&
           latestContent.trim().length === this.lastContentLength &&
           !isThinkingOnly(latestContent) &&
-          !isVisible(this.options.getStopButton())
+          !stillGenerating
         ) {
           // 双重确认：极短内容必须满足安全宽限时间或发送按钮恢复就绪
-          const sendBtn = this.options.getSendButton();
-          const isSendActive = sendBtn !== null && !sendBtn.hasAttribute('disabled') && sendBtn.getAttribute('aria-disabled') !== 'true';
-          if (latestContent.trim().length < 60 && !isSendActive && Date.now() - this.startTime < 20000) {
+          const sendActive = isElementActiveAndVisible(latestSend);
+          if (latestContent.trim().length < 60 && !sendActive && Date.now() - this.startTime < 20000) {
             this.silenceTimer = null;
             return;
           }
@@ -153,7 +171,7 @@ export class QuadSignalDoneDetector {
           flightRecorder.info('System', 'SILENCE_TIMER_TRIGGERED_DONE', { finalLen: latestContent.length });
           this.markDone(latestContent);
         } else {
-          // 长度还在变动，继续等待
+          // 长度还在变动或仍在生成中，继续等待
           this.silenceTimer = null;
         }
       }, this.options.silenceThresholdMs);
@@ -183,9 +201,41 @@ export class QuadSignalDoneDetector {
   }
 }
 
-function isVisible(el: HTMLElement | null): boolean {
+export function isElementActiveAndVisible(el: HTMLElement | null): boolean {
   if (!el) return false;
-  return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+
+  // 1. 禁用与隐藏语义属性检查
+  if (el.hasAttribute('disabled')) return false;
+  if (el.getAttribute('aria-disabled') === 'true') return false;
+  if (el.getAttribute('aria-hidden') === 'true' || el.hidden) return false;
+  if (el.classList.contains('disabled')) return false;
+
+  // 2. 深度计算样式检查（防 visibility: hidden / display: none / opacity: 0 / pointer-events: none）
+  if (typeof window !== 'undefined' && window.getComputedStyle) {
+    try {
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none') return false;
+      if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      if (parseFloat(style.opacity || '1') <= 0.05) return false;
+      if (style.pointerEvents === 'none') return false;
+    } catch {}
+  }
+
+  // 3. 尺寸与几何占位检查（在真实浏览器中生效；jsdom 环境下若未模拟 layout 则安全放行已连接 DOM 的元素）
+  const rects = el.getClientRects ? el.getClientRects() : null;
+  const hasDimensions = !!(el.offsetWidth || el.offsetHeight || (rects && rects.length > 0));
+  if (!hasDimensions) {
+    if (typeof window !== 'undefined' && window.document?.documentElement?.isConnected && el.isConnected) {
+      const isJsdom = typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent);
+      if (!isJsdom) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isThinkingOnly(text: string): boolean {

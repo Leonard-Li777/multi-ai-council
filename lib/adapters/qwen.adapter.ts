@@ -15,6 +15,7 @@ export class QwenAdapter implements AISiteAdapter {
 
   private activeDetector: QuadSignalDoneDetector | null = null;
   private currentSnapshot = '';
+  private highWaterMarkSnapshot = '';
   private baselineLastElement: HTMLElement | null = null;
   private baselineLastContent = '';
 
@@ -22,6 +23,7 @@ export class QwenAdapter implements AISiteAdapter {
     const el = this.findLatestAssistantMessageElement();
     this.baselineLastElement = el;
     this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+    this.highWaterMarkSnapshot = '';
   }
 
   public async isReady(): Promise<boolean> {
@@ -303,17 +305,49 @@ export class QwenAdapter implements AISiteAdapter {
         const clone = lastMsgEl.cloneNode(true) as HTMLElement;
         clone
           .querySelectorAll(
-            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], div[class*="collapse"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], button, [role="toolbar"]'
+            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], div[class*="collapse"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
           )
           .forEach((el) => el.remove());
 
-        const md = domToMarkdown(clone);
-        const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
+        // 查找所有顶层 markdown 容器（避免因部分小声明卡片导致主体回答被忽略）
+        const mdContainers = Array.from(
+          clone.querySelectorAll<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]')
+        ).filter((el) => {
+          return !el.parentElement?.closest('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
+        });
+
+        let result = '';
+        if (mdContainers.length > 0) {
+          result = mdContainers
+            .map((el) => {
+              const md = domToMarkdown(el);
+              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+            })
+            .filter((t) => t.trim().length > 0)
+            .join('\n\n');
+        }
+
+        // 兜底：若没有找到独立的 markdown 容器，或者容器提取字数过少，直接转换整轮
+        if (result.trim().length < 50) {
+          const fullMd = domToMarkdown(clone);
+          const fullText = (fullMd && fullMd.trim().length > 0) ? fullMd : (clone.innerText || clone.textContent || '').trim();
+          if (fullText.length > result.length) {
+            result = fullText;
+          }
+        }
         
         // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠）或少于 35 字符的思考占位，正文返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
         if (cleaned.length < 35) {
           return '';
+        }
+
+        // Anti-Shrink 高水位快照单调保护：杜绝流式期间 DOM 偶发抖动导致字数逆向回缩
+        if (cleaned.length < this.highWaterMarkSnapshot.length * 0.7) {
+          return this.highWaterMarkSnapshot;
+        }
+        if (cleaned.length > this.highWaterMarkSnapshot.length) {
+          this.highWaterMarkSnapshot = cleaned;
         }
 
         this.currentSnapshot = cleaned;
@@ -378,12 +412,21 @@ export class QwenAdapter implements AISiteAdapter {
 
     // 1. 若当前已产生了有效新回答，直接抓取完成
     const lastMsg = this.findLatestAssistantMessageElement();
-    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
-    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
-      const md = domToMarkdown(lastMsg);
-      const cleaned = (md && md.trim().length > 0) ? md : currentText;
-      onDone(cleaned);
-      return 'DONE';
+    if (lastMsg && lastMsg !== this.baselineLastElement && !this.findStopButton()) {
+      const clone = lastMsg.cloneNode(true) as HTMLElement;
+      clone
+        .querySelectorAll(
+          'div[class*="think"], div[class*="reasoning"], div[class*="thought"], div[class*="collapse"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
+        )
+        .forEach((el) => el.remove());
+
+      const md = domToMarkdown(clone);
+      const text = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
+      const { cleaned } = stripThinkBlocks(text);
+      if (cleaned.length > 35) {
+        onDone(cleaned);
+        return 'DONE';
+      }
     }
 
     // 2. 若当前仍在流式生成中，直接挂接监听
@@ -458,7 +501,14 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   private findStopButton(): HTMLElement | null {
+    const input = this.findInputElement();
+    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="input"]') as HTMLElement | null) : null;
+    const searchRoot = container || document;
+
     return (
+      searchRoot.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
+      searchRoot.querySelector<HTMLElement>('button[class*="stop"]') ||
+      searchRoot.querySelector<HTMLElement>('div[class*="stop-btn"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
       document.querySelector<HTMLElement>('button[class*="stop"]') ||
       document.querySelector<HTMLElement>('div[class*="stop-btn"]')
@@ -478,42 +528,8 @@ export class QwenAdapter implements AISiteAdapter {
     });
 
     if (turns.length > 0) {
-      const lastTurn = turns[turns.length - 1]!;
-      // 深度思考防护：检查 lastTurn 内所有的 markdown 容器，严格剔除思考折叠块
-      const allMdEls = Array.from(
-        lastTurn.querySelectorAll<HTMLElement>(
-          'div.qwen-markdown, div.markdown-body, div[class*="markdown"], div[class*="content"]'
-        )
-      ).filter((el) => {
-        const cls = (el.className || '').toLowerCase();
-        const parentCls = (el.parentElement?.className || '').toLowerCase();
-        const isThink =
-          cls.includes('think') ||
-          cls.includes('reason') ||
-          cls.includes('thought') ||
-          cls.includes('collapse') ||
-          parentCls.includes('think') ||
-          parentCls.includes('reason');
-        return !isThink;
-      });
-
-      for (let i = allMdEls.length - 1; i >= 0; i--) {
-        const candidate = allMdEls[i]!;
-        const text = (candidate.innerText || candidate.textContent || '').trim();
-        const { cleaned } = stripThinkBlocks(text);
-        if (cleaned.length > 0) {
-          return candidate;
-        }
-      }
-
-      // 检查 lastTurn 自身是否仅包含思考状态（如“已经完成思考”或思考折叠容器）
-      const rawText = (lastTurn.innerText || lastTurn.textContent || '').trim();
-      const { cleaned } = stripThinkBlocks(rawText);
-      if (cleaned.length === 0) {
-        // 尚未出现真正正文，返回 null 等待 DOM 变动
-        return null;
-      }
-      return lastTurn;
+      // 核心：直接返回最新完整轮次容器，由上层净化并聚合所有 markdown 块，杜绝局部段落截断
+      return turns[turns.length - 1]!;
     }
 
     // 2. 降级：查找全量 qwen-markdown 容器中的最后一个
