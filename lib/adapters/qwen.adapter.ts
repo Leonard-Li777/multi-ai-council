@@ -296,9 +296,9 @@ export class QwenAdapter implements AISiteAdapter {
         const md = domToMarkdown(clone);
         const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
         
-        // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠），正文为 0，返回空以令 Detector 保持守候
+        // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠）或少于 35 字符的思考占位，正文返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
-        if (cleaned.length === 0) {
+        if (cleaned.length < 35) {
           return '';
         }
 

@@ -44,8 +44,10 @@ export function stripThinkBlocks(rawText: string): { cleaned: string; thinkConte
     normalized === '思考过程' ||
     normalized === 'thinking' ||
     normalized === 'thought' ||
-    (normalized.includes('完成思考') && normalized.length <= 25) ||
-    (normalized.includes('思考') && normalized.length <= 15)
+    (normalized.includes('完成思考') && normalized.length <= 35) ||
+    (normalized.includes('深度思考') && normalized.length <= 40) ||
+    (normalized.includes('思考') && normalized.length <= 35) ||
+    (normalized.includes('用时') && normalized.length <= 35)
   ) {
     cleaned = '';
   }

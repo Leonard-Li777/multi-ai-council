@@ -180,48 +180,48 @@ export class GeminiAdapter implements AISiteAdapter {
           }
         }
 
-        // 核心：若获取到的是包含整个回答的卡片容器，通过克隆并将底部的工具栏、操作按钮等剔除，完整保留整篇长回答
-        let targetEl = lastMsgEl;
-        const noisyNodes = targetEl.querySelectorAll(
-          'div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button, [class*="response-container-footer"]'
-        );
-        if (noisyNodes.length > 0) {
-          const clone = targetEl.cloneNode(true) as HTMLElement;
-          clone
-            .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="action"], [role="toolbar"], button, [class*="response-container-footer"]')
-            .forEach((n) => n.remove());
-          targetEl = clone;
-        }
-
-        // 优先提取内部所有段落：若包含多个 message-content，完整拼接所有段落杜绝截断
-        const msgContents = Array.from(targetEl.querySelectorAll<HTMLElement>('message-content')).filter(
+        // 核心：从轮次或父级容器中提取全部 message-content 段落，实现全量合并杜绝截断
+        const msgContents = Array.from(lastMsgEl.querySelectorAll<HTMLElement>('message-content')).filter(
           (el) => (el.innerText || el.textContent || '').trim().length > 0
         );
 
         let result = '';
-        if (msgContents.length > 1) {
+        if (msgContents.length > 0) {
+          // 将所有段落（含代码块、列表）逐段转换为 Markdown 并拼接
           result = msgContents
             .map((el) => {
-              const md = domToMarkdown(el);
-              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+              const clone = el.cloneNode(true) as HTMLElement;
+              clone.querySelectorAll('button, [class*="footer"], [class*="toolbar"]').forEach((b) => b.remove());
+              const md = domToMarkdown(clone);
+              return (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
             })
             .filter(Boolean)
             .join('\n\n');
         } else {
+          // 若无独立 message-content 标签，清理 targetEl 后兜底提取
+          let targetEl = lastMsgEl;
+          const noisyNodes = targetEl.querySelectorAll(
+            'div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]'
+          );
+          if (noisyNodes.length > 0) {
+            const clone = targetEl.cloneNode(true) as HTMLElement;
+            clone
+              .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]')
+              .forEach((n) => n.remove());
+            targetEl = clone;
+          }
           result = (targetEl.innerText || targetEl.textContent || '').trim();
           try {
             const md = domToMarkdown(targetEl);
             if (md && md.trim().length > 0) {
               result = md;
             }
-          } catch {
-            // domToMarkdown 失败时降级纯文本
-          }
+          } catch {}
         }
 
-        // 核心防护：若当前内容完全属于思考块或少于 15 字符的占位模型名，返回空以保持侦测
+        // 核心防护：若当前内容完全属于思考块或少于 20 字符的模型名字/占位符（如 "Gemini 2.0 Flash"），返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
-        if (cleaned.length === 0) {
+        if (cleaned.length < 20) {
           return '';
         }
 
@@ -380,27 +380,16 @@ export class GeminiAdapter implements AISiteAdapter {
 
     if (modelResponses.length > 0) {
       const last = modelResponses[modelResponses.length - 1]!;
-      // 优先在最新轮次内部查找包含全量段落的内容容器（包含所有 message-content 与代码块）
-      const contentContainer = last.querySelector<HTMLElement>(
-        'div.response-container-content, div[class*="response-container-content"], div[class*="response-content"], div[class*="markdown-main-panel"]'
+      // 核心要求：最新轮次内必须已经出现真正的正文段落（message-content 或 markdown 面板）
+      const hasContent = last.querySelector<HTMLElement>(
+        'message-content, div.markdown, div[class*="markdown"], div[class*="response-container-content"]'
       );
-      if (contentContainer && (contentContainer.innerText || contentContainer.textContent || '').trim().length > 0) {
-        return contentContainer;
+      if (hasContent && (hasContent.innerText || hasContent.textContent || '').trim().length > 0) {
+        return last;
       }
-      return last;
     }
 
-    // 2. 降级：直接寻找页面上的 response-container-content 容器
-    const responseContents = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'div.response-container-content, div[class*="response-container-content"], div[class*="response-content"]'
-      )
-    );
-    if (responseContents.length > 0) {
-      return responseContents[responseContents.length - 1] ?? null;
-    }
-
-    // 3. 降级：若有外层的 message-content 父级容器，返回其共同的轮次容器，防止被单段截断
+    // 2. 降级：直接寻找页面上的 message-content 正文容器
     const allMsgContents = Array.from(document.querySelectorAll<HTMLElement>('message-content')).filter(
       (el) => (el.innerText || el.textContent || '').trim().length > 0
     );
@@ -409,18 +398,15 @@ export class GeminiAdapter implements AISiteAdapter {
       const parentTurn = lastContent.closest<HTMLElement>(
         'model-response, div[class*="response-container"], div[class*="model-response"]'
       );
-      if (parentTurn) {
-        return parentTurn;
-      }
-      return lastContent;
+      return parentTurn || lastContent;
     }
 
-    // 4. 降级：直接寻找页面上的 markdown 主面板
+    // 3. 降级：直接寻找页面上的 markdown 主面板
     const contents = Array.from(
       document.querySelectorAll<HTMLElement>(
         'div[class*="model-response-text"], div[class*="markdown-main-panel"], div.markdown'
       )
-    );
+    ).filter((el) => (el.innerText || el.textContent || '').trim().length > 0);
     if (contents.length > 0) {
       return contents[contents.length - 1] ?? null;
     }

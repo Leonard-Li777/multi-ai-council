@@ -199,7 +199,11 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
         ) {
           lastLoggedDomLen = snapshot.length;
           lastLoggedDomTime = now;
-          flightRecorder.info(siteName, 'DOM_STREAM_UPDATE', { length: snapshot.length, jobId });
+          flightRecorder.info(siteName, 'DOM_STREAM_UPDATE', {
+            length: snapshot.length,
+            preview: snapshot.slice(0, 80).replace(/\n/g, ' '),
+            jobId,
+          });
         }
 
         sendFn({
@@ -223,8 +227,8 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
       const netLen = accumulatedSnapshot.trim().length;
       const domLen = sanitizedCleaned.trim().length;
 
-      // 核心防早熟收敛门禁：若内容完全为思考占位词（如“已经完成思考”），或 DOM 与网络正文字数皆极短 (<15字且网络无充沛内容)，坚决拒绝提前终结！
-      if (isPureThinking || (domLen < 15 && netLen < 30)) {
+      // 核心防早熟收敛门禁：若内容完全为思考占位词（如“已经完成思考”），或 DOM 与网络正文字数皆极短 (<20字且网络无充沛内容)，坚决拒绝提前终结！
+      if (isPureThinking || (domLen < 20 && netLen < 30)) {
         flightRecorder.warn(siteName, 'DOM_PREMATURE_REJECTED', { domLen, netLen, jobId, isPureThinking });
         return;
       }
@@ -247,6 +251,7 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
         netLen,
         domLen,
         selectedLen: selectedText.length,
+        preview: selectedText.slice(0, 80).replace(/\n/g, ' '),
         jobId,
       });
 
