@@ -39,6 +39,11 @@ export default defineContentScript({
         isDispatching = true;
         currentJobId = jobId;
 
+        send({
+          type: 'STATUS_CHANGE',
+          payload: { siteName: 'Qwen', jobId, status: 'SENDING' },
+        });
+
         try {
           const blocker = await qwenAdapter.checkBlocker();
           if (blocker === 'CAPTCHA') {

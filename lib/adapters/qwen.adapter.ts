@@ -73,9 +73,14 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   public async createNewChat(): Promise<void> {
+    // 关键优化：若当前页面本无历史消息，切勿重复点击 New Chat 避免触发 SPA 页面硬刷新自杀
+    if (!this.hasExistingMessages()) {
+      return;
+    }
+
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button, a, div[role="button"], span[role="button"]'
+        'button, div[role="button"], span[role="button"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
@@ -90,23 +95,17 @@ export class QwenAdapter implements AISiteAdapter {
         text === '新会话' ||
         text === '新建会话' ||
         text === 'new chat' ||
-        text.includes('新对话') ||
-        text.includes('新建会话') ||
-        text.includes('新会话') ||
         aria.includes('新对话') ||
         aria.includes('新建对话') ||
         aria.includes('新会话') ||
-        aria.includes('new chat') ||
         title.includes('新对话') ||
-        title.includes('new chat') ||
-        el.getAttribute('data-testid')?.includes('new-chat') ||
-        (el instanceof HTMLAnchorElement && (el.getAttribute('href') === '/' || el.getAttribute('href') === '/c/new'))
+        el.getAttribute('data-testid')?.includes('new-chat')
       );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(400);
     }
   }
 
@@ -195,10 +194,20 @@ export class QwenAdapter implements AISiteAdapter {
     this.recordBaseline();
 
     const input = this.findInputElement();
-    if (!input) return false;
+    if (!input) {
+      flightRecorder.error('Qwen', 'INPUT_NOT_FOUND');
+      return false;
+    }
+
+    flightRecorder.info('Qwen', 'INPUT_FOUND', { tag: input.tagName, promptLen: prompt.length });
 
     const injected = await simulateTextInput(input, prompt);
-    if (!injected) return false;
+    if (!injected) {
+      flightRecorder.error('Qwen', 'PROMPT_INJECT_FAILED');
+      return false;
+    }
+
+    flightRecorder.info('Qwen', 'PROMPT_INJECT_SUCCESS', { promptLen: prompt.length });
 
     await this.sleep(400);
 
@@ -208,7 +217,10 @@ export class QwenAdapter implements AISiteAdapter {
     if (sendBtn && !isDisabled) {
       sendBtn.click();
       sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      flightRecorder.info('Qwen', 'SEND_BUTTON_CLICKED');
       await this.sleep(300);
+    } else {
+      flightRecorder.warn('Qwen', 'SEND_BUTTON_DISABLED_OR_NOT_FOUND', { exists: !!sendBtn, isDisabled });
     }
 
     // 尝试通过原生表单 requestSubmit() 提交
@@ -216,6 +228,7 @@ export class QwenAdapter implements AISiteAdapter {
     if (form && !this.findStopButton()) {
       try {
         form.requestSubmit();
+        flightRecorder.info('Qwen', 'FORM_REQUEST_SUBMIT_CALLED');
         await this.sleep(200);
       } catch {}
     }
@@ -235,6 +248,7 @@ export class QwenAdapter implements AISiteAdapter {
       input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
       input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
       input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      flightRecorder.info('Qwen', 'ENTER_KEY_DISPATCHED');
     }
     return true;
   }

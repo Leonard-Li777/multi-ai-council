@@ -38,6 +38,11 @@ export default defineContentScript({
         isDispatching = true;
         currentJobId = jobId;
 
+        send({
+          type: 'STATUS_CHANGE',
+          payload: { siteName: 'Gemini', jobId, status: 'SENDING' },
+        });
+
         try {
           const blocker = await geminiAdapter.checkBlocker();
           if (blocker === 'CAPTCHA') {

@@ -63,9 +63,14 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   public async createNewChat(): Promise<void> {
+    // 关键优化：若当前页面本无历史消息，切勿重复点击 New Chat 避免触发 SPA 页面硬刷新自杀
+    if (!this.hasExistingMessages()) {
+      return;
+    }
+
     const allCandidates = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button, a, div[role="button"], span[role="button"]'
+        'button, div[role="button"], span[role="button"]'
       )
     );
     const newChatBtn = allCandidates.find((el) => {
@@ -74,19 +79,19 @@ export class GeminiAdapter implements AISiteAdapter {
       const text = (el.innerText || el.textContent || '').trim().toLowerCase();
       const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
       return (
-        text.includes('new chat') ||
-        text.includes('新对话') ||
-        text.includes('新建对话') ||
-        aria.includes('new chat') ||
-        aria.includes('新对话') ||
-        aria.includes('新建对话') ||
+        text === 'new chat' ||
+        text === '新对话' ||
+        text === '新建对话' ||
+        aria === 'new chat' ||
+        aria === '新对话' ||
+        aria === '新建对话' ||
         el.getAttribute('data-test-id')?.includes('new-chat')
       );
     });
 
     if (newChatBtn) {
       newChatBtn.click();
-      await this.sleep(600);
+      await this.sleep(400);
     }
   }
 
@@ -98,11 +103,21 @@ export class GeminiAdapter implements AISiteAdapter {
     this.recordBaseline();
 
     const input = this.findInputElement();
-    if (!input) return false;
+    if (!input) {
+      flightRecorder.error('Gemini', 'INPUT_NOT_FOUND');
+      return false;
+    }
+
+    flightRecorder.info('Gemini', 'INPUT_FOUND', { tag: input.tagName, promptLen: prompt.length });
 
     // Gemini 使用 Quill 富文本编辑器 (div.ql-editor)
     const injected = await simulateTextInput(input, prompt);
-    if (!injected) return false;
+    if (!injected) {
+      flightRecorder.error('Gemini', 'PROMPT_INJECT_FAILED');
+      return false;
+    }
+
+    flightRecorder.info('Gemini', 'PROMPT_INJECT_SUCCESS', { promptLen: prompt.length });
 
     await this.sleep(350);
 
@@ -111,11 +126,17 @@ export class GeminiAdapter implements AISiteAdapter {
     const isDisabled = sendBtn?.hasAttribute('disabled') || isAriaDisabled;
     if (sendBtn && !isDisabled) {
       sendBtn.click();
+      sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      flightRecorder.info('Gemini', 'SEND_BUTTON_CLICKED');
       await this.sleep(200);
+    } else {
+      flightRecorder.warn('Gemini', 'SEND_BUTTON_DISABLED_OR_NOT_FOUND', { exists: !!sendBtn, isDisabled });
     }
 
     const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
-    if (currentVal.trim().length > 0) {
+    if (currentVal.trim().length > 0 && !this.findStopButton()) {
       const eventInit: KeyboardEventInit = {
         key: 'Enter',
         code: 'Enter',
@@ -129,6 +150,7 @@ export class GeminiAdapter implements AISiteAdapter {
       input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
       input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
       input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      flightRecorder.info('Gemini', 'ENTER_KEY_DISPATCHED');
     }
     return true;
   }

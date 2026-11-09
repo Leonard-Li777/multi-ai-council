@@ -230,8 +230,17 @@ export class WenxinAdapter implements AISiteAdapter {
           return '';
         }
 
-        this.currentSnapshot = result;
-        return result;
+        // 核心防断崖式回退保护（Anti-Shrink Protection）：
+        // 若当前轮次已抓取了长正文（例如 1500+ 字），而当前帧因底部挂件、弹窗或临时节点漂移骤降为极短文本（如 2 字“表格”），
+        // 绝不采纳此脏快照，坚决返回历史最高有效长文本，彻底根除 1550 字突变为 2 字的早熟误判缺陷！
+        if (this.currentSnapshot.length > 100 && result.length < this.currentSnapshot.length * 0.3) {
+          return this.currentSnapshot;
+        }
+
+        if (result.length >= this.currentSnapshot.length) {
+          this.currentSnapshot = result;
+        }
+        return this.currentSnapshot || result;
       },
       onUpdate: (rawMd) => {
         const { cleaned } = stripThinkBlocks(rawMd);
@@ -412,15 +421,30 @@ export class WenxinAdapter implements AISiteAdapter {
     });
 
     if (turns.length > 0) {
-      const lastTurn = turns[turns.length - 1]!;
-      // 优先在最新轮次内部查找正文富文本/Markdown 容器
-      const contentEl = lastTurn.querySelector<HTMLElement>(
-        'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
-      );
-      if (contentEl && (contentEl.innerText || contentEl.textContent || '').trim().length > 0) {
-        return contentEl;
+      // 倒序遍历轮次，严格排除底部独立的插件卡片、表格浮层或操作栏
+      for (let i = turns.length - 1; i >= 0; i--) {
+        const turn = turns[i]!;
+        const cls = (turn.className || '').toLowerCase();
+        if (
+          cls.includes('action') ||
+          cls.includes('plugin') ||
+          cls.includes('toolbar') ||
+          cls.includes('tool-bar') ||
+          cls.includes('footer') ||
+          cls.includes('operate')
+        ) {
+          continue;
+        }
+        const contentEl = turn.querySelector<HTMLElement>(
+          'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+        );
+        const text = ((contentEl || turn).innerText || (contentEl || turn).textContent || '').trim();
+        // 若该轮次有实质正文 (> 20字)，优先采纳
+        if (text.length > 20) {
+          return contentEl || turn;
+        }
       }
-      return lastTurn;
+      return turns[turns.length - 1]!;
     }
 
     // 2. 降级：查询页面中所有非用户的 markdown / 富文本正文容器
