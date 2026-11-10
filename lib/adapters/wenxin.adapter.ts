@@ -201,53 +201,92 @@ export class WenxinAdapter implements AISiteAdapter {
       getStopButton: () => this.findStopButton(),
       getSendButton: () => this.findSendButton(),
       getCurrentContent: () => {
-        const lastMsgEl = this.findLatestAssistantMessageElement();
-        if (!lastMsgEl) return '';
+        const lastUserEl = this.findLatestUserMessageElement();
+        let candidateContainers: HTMLElement[] = [];
 
-        // 主动滚屏保持元素挂载，防止文心一言虚拟滚动卸载上部段落
-        try {
-          lastMsgEl.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
-        } catch {}
+        // 1. 若定位到了用户最后一条输入，获取在其后生成的所有 markdown / robot-content 容器（彻底防止多卡片被截断）
+        if (lastUserEl) {
+          const allMd = Array.from(
+            document.querySelectorAll<HTMLElement>(
+              'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+            )
+          ).filter((el) => {
+            const userAncestor = el.closest('[class*="user"], [class*="human"], [class*="self"], [data-role="user"]');
+            if (userAncestor) return false;
+            const cls = (el.className || '').toString().toLowerCase();
+            if (cls.includes('user') || cls.includes('input') || cls.includes('editor')) return false;
+            return (lastUserEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+          });
 
-        const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
-        if (lastMsgEl === this.baselineLastElement) {
-          if (currentText.length <= this.baselineLastContent.length) {
-            return '';
-          }
+          candidateContainers = allMd.filter((el) => {
+            return !el.parentElement?.closest(
+              'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+            );
+          });
         }
 
-        // 核心：从轮次容器中聚合全部正文内容，杜绝仅截取首个子块
-        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
-        clone
-          .querySelectorAll(
-            'div[class*="toolbar"], div[class*="tool-bar"], div[class*="footer"], div[class*="operate"], div[class*="action"], [role="toolbar"], button, div[class*="avatar"]'
-          )
-          .forEach((el) => el.remove());
-
-        // 查找所有顶层 markdown / 富文本容器
-        const mdContainers = Array.from(
-          clone.querySelectorAll<HTMLElement>(
-            'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
-          )
-        ).filter((el) => {
-          return !el.parentElement?.closest(
-            'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
-          );
-        });
-
         let result = '';
-        if (mdContainers.length > 0) {
-          result = mdContainers
+        if (candidateContainers.length > 0) {
+          result = candidateContainers
             .map((el) => {
-              const md = domToMarkdown(el);
-              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+              const clone = el.cloneNode(true) as HTMLElement;
+              clone
+                .querySelectorAll(
+                  'div[class*="toolbar"], div[class*="tool-bar"], div[class*="footer"], div[class*="operate"], div[class*="action"], [role="toolbar"], button, div[class*="avatar"]'
+                )
+                .forEach((node) => node.remove());
+              const md = domToMarkdown(clone);
+              return (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
             })
             .filter((t) => t.trim().length > 0)
             .join('\n\n');
         }
 
-        // 兜底：若没有找到独立的子容器或提取过少，对净化后的整轮执行转换
-        if (result.trim().length < 50) {
+        // 2. 兜底与整轮合并：结合 findLatestAssistantMessageElement()
+        const lastMsgEl = this.findLatestAssistantMessageElement();
+        if (lastMsgEl) {
+          // 主动滚屏保持元素挂载，防止文心一言虚拟滚动卸载上部段落
+          try {
+            lastMsgEl.scrollIntoView({ behavior: 'instant' as ScrollBehavior, block: 'end' });
+          } catch {}
+
+          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+          if (lastMsgEl === this.baselineLastElement) {
+            if (currentText.length <= this.baselineLastContent.length && !result) {
+              return '';
+            }
+          }
+
+          const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll(
+              'div[class*="toolbar"], div[class*="tool-bar"], div[class*="footer"], div[class*="operate"], div[class*="action"], [role="toolbar"], button, div[class*="avatar"]'
+            )
+            .forEach((el) => el.remove());
+
+          if (!result) {
+            const mdContainers = Array.from(
+              clone.querySelectorAll<HTMLElement>(
+                'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+              )
+            ).filter((el) => {
+              return !el.parentElement?.closest(
+                'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+              );
+            });
+
+            if (mdContainers.length > 0) {
+              result = mdContainers
+                .map((el) => {
+                  const md = domToMarkdown(el);
+                  return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+                })
+                .filter((t) => t.trim().length > 0)
+                .join('\n\n');
+            }
+          }
+
+          // 核心：对净化后的整轮执行转换，若全轮文本长度大于子块聚合，采用全轮
           const fullMd = domToMarkdown(clone);
           const fullText = (fullMd && fullMd.trim().length > 0) ? fullMd : (clone.innerText || clone.textContent || '').trim();
           if (fullText.length > result.length) {
@@ -279,7 +318,7 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 12000,
     });
 
     this.activeDetector.start(chatContainer);
@@ -456,6 +495,27 @@ export class WenxinAdapter implements AISiteAdapter {
     }
 
     return 'FAILED';
+  }
+
+  private findLatestUserMessageElement(): HTMLElement | null {
+    const userNodes = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[class*="chat-message"], div[class*="ans-item"], div[class*="robot-item"], div[class*="dialogue"], div[class*="item"], div[class*="message"], [data-role="user"], [data-is-user="true"], div[class*="user"], div[class*="human"]'
+      )
+    ).filter((el) => {
+      const cls = (el.className || '').toString().toLowerCase();
+      const role = (el.getAttribute('data-role') || '').toLowerCase();
+      const isInput = cls.includes('input') || cls.includes('editor') || cls.includes('fixed') || cls.includes('textarea');
+      return (
+        !isInput &&
+        (cls.includes('user') ||
+          cls.includes('human') ||
+          cls.includes('self') ||
+          role === 'user' ||
+          el.getAttribute('data-is-user') === 'true')
+      );
+    });
+    return userNodes.length > 0 ? userNodes[userNodes.length - 1]! : null;
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {

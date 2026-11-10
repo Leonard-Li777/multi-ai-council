@@ -210,13 +210,13 @@ export class ChatGPTAdapter implements AISiteAdapter {
     await this.sleep(300);
 
     // 3. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 3 秒)
-    let clicked = false;
+    let submitted = false;
     for (let attempt = 0; attempt < 15; attempt++) {
       await this.sleep(200);
 
       // 若已经出现真正的停止按钮，说明已成功进入生成
       if (this.findStopButton()) {
-        clicked = true;
+        submitted = true;
         flightRecorder.info('ChatGPT', 'STOP_BUTTON_ALREADY_PRESENT');
         break;
       }
@@ -227,35 +227,26 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const isDisabled = sendBtn.hasAttribute('disabled') || isAriaDisabled;
         if (!isDisabled) {
           sendBtn.click();
-          clicked = true;
+          submitted = true;
           flightRecorder.info('ChatGPT', 'SEND_BUTTON_CLICKED', { attempt });
-          await this.sleep(300);
+          await this.sleep(800);
           break;
-        } else if (attempt >= 3) {
-          // 若 600ms 后依然 aria-disabled，强行解除限制并触发点击
+        } else if (attempt >= 5) {
+          // 若 1s 后依然 aria-disabled，强行解除限制并触发点击
           sendBtn.removeAttribute('disabled');
           sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
-          clicked = true;
+          submitted = true;
           flightRecorder.warn('ChatGPT', 'SEND_BUTTON_FORCE_CLICKED', { attempt });
-          await this.sleep(300);
+          await this.sleep(800);
           break;
         }
       }
     }
 
-    // 4. 表单原生提交尝试 (requestSubmit 唤醒 React onSubmit 监听)
-    const form = input.closest('form');
-    if (form && !this.findStopButton()) {
-      try {
-        form.requestSubmit();
-        flightRecorder.info('ChatGPT', 'FORM_REQUEST_SUBMIT_CALLED');
-        await this.sleep(300);
-      } catch {}
-    }
-
-    // 5. 强力按键保底：派发真正的 Enter 键盘事件（ProseMirror 最可靠提交方式）
-    if (!this.findStopButton()) {
+    // 4. 单通道互斥保底：仅在未成功点击发送按钮且未检测到停止按钮时，才尝试派发单次 Enter 键盘事件！
+    // 坚决杜绝 form.requestSubmit() 与多次并发派发 Enter，彻底解决 Next.js/ProseMirror 并发踩踏卡死页面！
+    if (!submitted && !this.findStopButton()) {
       input.focus();
       const enterInit: KeyboardEventInit = {
         key: 'Enter',
@@ -270,7 +261,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
       input.dispatchEvent(new KeyboardEvent('keypress', enterInit));
       input.dispatchEvent(new KeyboardEvent('keyup', enterInit));
       flightRecorder.info('ChatGPT', 'ENTER_KEY_DISPATCHED');
-      await this.sleep(300);
+      await this.sleep(500);
     }
 
     return true;
@@ -280,7 +271,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 验证消息是否提交成功
    */
   public async validateSubmission(): Promise<boolean> {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 15; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) {
@@ -309,19 +300,6 @@ export class ChatGPTAdapter implements AISiteAdapter {
           flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
           return true;
         }
-
-        // 若输入框仍有文本，再次主动补点一次发送按钮与 Enter
-        const sendBtn = this.findSendButton();
-        if (sendBtn) {
-          sendBtn.removeAttribute('disabled');
-          sendBtn.setAttribute('aria-disabled', 'false');
-          sendBtn.click();
-        }
-        input.focus();
-        const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
-        input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
-        input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
-        input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
       }
     }
 
@@ -344,6 +322,20 @@ export class ChatGPTAdapter implements AISiteAdapter {
       const val = finalInput instanceof HTMLTextAreaElement ? finalInput.value : (finalInput.innerText || finalInput.textContent || '');
       if (val.trim().length === 0) {
         flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_INPUT_CLEARED' });
+        return true;
+      }
+    }
+
+    // 唯一单次温和补发兜底：仅在经过整整 6 秒无响应且依然处于未发送时尝试单次 Enter，严禁循环内频繁轰炸
+    if (finalInput) {
+      flightRecorder.warn('ChatGPT', 'VALIDATE_SUBMISSION_RETRY_ENTER_ONCE');
+      finalInput.focus();
+      const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+      finalInput.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+      finalInput.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+      finalInput.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+      await this.sleep(1000);
+      if (this.findStopButton() || window.location.pathname.startsWith('/c/')) {
         return true;
       }
     }
@@ -391,7 +383,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 12000,
     });
 
     this.activeDetector.start(chatContainer);

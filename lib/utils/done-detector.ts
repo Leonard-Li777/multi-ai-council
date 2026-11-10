@@ -4,8 +4,8 @@ import { flightRecorder } from '../logger/flight-recorder';
  * 四信号生成完成判定器
  * 1. 停止生成按钮消失
  * 2. 发送按钮就绪
- * 3. DOM 静默 ≥ 2000ms
- * 4. 文本长度稳定
+ * 3. DOM 静默 ≥ 12000ms（动态阶梯式）
+ * 4. 文本长度稳定且 Markdown 结构闭合
  */
 export interface DoneDetectorOptions {
   getStopButton: () => HTMLElement | null;
@@ -14,6 +14,7 @@ export interface DoneDetectorOptions {
   onDone: (finalContent: string) => void;
   onUpdate: (currentContent: string) => void;
   silenceThresholdMs?: number;
+  hardSilenceThresholdMs?: number; // 幽灵停止按钮强制解除死锁的硬静默时长，默认 15000ms
   userPrompt?: string; // 可选传入用户发送的原始提示词，用于提示词回显与角色污染防伪拦截
 }
 
@@ -32,7 +33,8 @@ export class QuadSignalDoneDetector {
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
-      silenceThresholdMs: 4500,
+      silenceThresholdMs: 12000,
+      hardSilenceThresholdMs: 15000,
       ...options,
     };
   }
@@ -125,14 +127,15 @@ export class QuadSignalDoneDetector {
       this.hasEverGenerated = true;
 
       // 核心防死锁机制 (Hard Silence Override)：
-      // 若正文已产生一定规模 (>100字且非纯思考词)，且整整 8 秒以上 DOM 字符未变动一个字节，
+      // 当处于生成态（Stop 按钮可见）时，若正文整整 hardSilenceThresholdMs (默认 15s) 以上 DOM 字符未变动一个字节，
       // 说明实际生成早已结束，残存的 Stop 按钮仅为未卸载的幽灵节点或非生成控制元素，强制解除死锁触发终审！
       const silentDurationMs = Date.now() - this.lastContentUpdateTime;
+      const hardThreshold = this.options.hardSilenceThresholdMs ?? 15000;
       if (
         this.hasEverGenerated &&
         currentLen >= 100 &&
         !isThinkingOnly(content) &&
-        silentDurationMs >= 8000
+        silentDurationMs >= hardThreshold
       ) {
         flightRecorder.warn('System', 'HARD_SILENCE_FORCE_DONE', {
           finalLen: currentLen,
@@ -184,10 +187,13 @@ export class QuadSignalDoneDetector {
     // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= effectiveSilenceMs 即判定完成）
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
-      // 动态静默门禁：正文极短 (<100字) 时，极可能是刚输出了标题或遇到模型流式间隙停顿，维持至少 15 秒静默，严防早熟早收敛
-      const effectiveSilenceMs = currentLen < 100
-        ? Math.max(this.options.silenceThresholdMs || 4500, 15000)
-        : (this.options.silenceThresholdMs || 4500);
+      // 动态静默门禁：
+      // 1. 正文极短 (<100字) 时，极可能是刚输出了标题或遇到模型流式间隙停顿，维持至少 15 秒静默，严防早熟早收敛
+      // 2. 若用户/单测显式传入了 silenceThresholdMs 则优先遵从，否则默认至少 12 秒阶梯式静默
+      let effectiveSilenceMs = this.options.silenceThresholdMs ?? 12000;
+      if (currentLen < 100) {
+        effectiveSilenceMs = Math.max(effectiveSilenceMs, 15000);
+      }
 
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
@@ -195,8 +201,22 @@ export class QuadSignalDoneDetector {
         const latestSend = this.options.getSendButton();
         const stillGenerating = isElementActiveAndVisible(latestStop) && !(latestSend && latestSend !== latestStop && isElementActiveAndVisible(latestSend));
 
+        const silentDurationMs = Date.now() - this.lastContentUpdateTime;
+        const hardThreshold = this.options.hardSilenceThresholdMs ?? 15000;
+        const isHardSilent = latestContent.length >= 100 && silentDurationMs >= hardThreshold;
+
+        // 核心结构完整性校验：若 Markdown 结构明显未闭合（代码块开着、悬空标点/标题结尾），且尚未达到 25 秒极限静默超时，严禁判定完成！
+        const isStructuralIncomplete = isMarkdownStructurallyIncomplete(latestContent);
+        if (isStructuralIncomplete && silentDurationMs < 25000) {
+          flightRecorder.warn('System', 'STRUCTURAL_INCOMPLETE_WAITING', {
+            len: latestContent.length,
+            silentDurationMs,
+          });
+          this.silenceTimer = null;
+          return;
+        }
+
         // 再次确认内容长度稳定、非思考占位词、且不再处于生成中（或已触发长文本绝对静默保底）
-        const isHardSilent = latestContent.length >= 100 && (Date.now() - this.lastContentUpdateTime >= 8000);
         if (
           !this.isCompleted &&
           latestContent.trim().length === this.lastContentLength &&
@@ -325,6 +345,57 @@ export function isPromptEcho(content: string, userPrompt?: string): boolean {
 
   // 3. 长度相似且前 40 字符相同
   if (Math.abs(cTrim.length - pTrim.length) < 100 && cTrim.slice(0, 40) === pTrim.slice(0, 40)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * 校验 Markdown 文本结构是否完整
+ * 若存在未闭合代码块、悬空列表标记、未完成标题、悬空标点符号，判定为尚未生成完毕
+ */
+export function isMarkdownStructurallyIncomplete(text: string): boolean {
+  if (!text || text.trim().length === 0) return true;
+  const trimmed = text.trim();
+
+  // 1. 检查三反引号代码块未闭合：``` 数量为奇数
+  const backtickMatches = trimmed.match(/```/g);
+  if (backtickMatches && backtickMatches.length % 2 !== 0) {
+    return true;
+  }
+
+  // 2. 检查波浪号代码块未闭合：~~~ 数量为奇数
+  const tildeMatches = trimmed.match(/~~~/g);
+  if (tildeMatches && tildeMatches.length % 2 !== 0) {
+    return true;
+  }
+
+  // 3. 检查行尾悬空语法
+  const lines = trimmed.split('\n');
+  const lastLine = (lines[lines.length - 1] || '').trim();
+
+  // 标题行悬空：如以 '#' 或 '###' 结尾，或者只写了 '### ' 还没写标题内容
+  if (/^#{1,6}\s*$/.test(lastLine)) {
+    return true;
+  }
+
+  // 列表标记悬空：如以 '- ', '* ', '+ ', '1. ', '1) ' 结尾且无正文
+  if (/^(\d+[\.\)]|[\-\*\+])\s*$/.test(lastLine)) {
+    return true;
+  }
+
+  // 未闭合的行内加粗或斜体标记：末尾以 '*' 或 '**' 或 '__' 结尾
+  if (/(?<!\*)\*{1,2}$/.test(lastLine) && !/\*{3,}$/.test(lastLine)) {
+    return true;
+  }
+  if (/(?<!_)_{1,2}$/.test(lastLine) && !/_{3,}$/.test(lastLine)) {
+    return true;
+  }
+
+  // 明显的悬空标点符号或连词结尾（正文在逗号、冒号、顿号、未闭合括号处戛然而止）
+  // 注意：不包含 Markdown 表格末尾的 '|'
+  if (/[，,：:、\(（\[【“"\\—…]$/.test(lastLine)) {
     return true;
   }
 

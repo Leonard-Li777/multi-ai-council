@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isElementActiveAndVisible, QuadSignalDoneDetector } from '../lib/utils/done-detector';
+import { isElementActiveAndVisible, QuadSignalDoneDetector, isMarkdownStructurallyIncomplete } from '../lib/utils/done-detector';
 
 describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
   beforeEach(() => {
@@ -226,6 +226,7 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
         onDone,
         onUpdate: vi.fn(),
         silenceThresholdMs: 2000,
+        hardSilenceThresholdMs: 8000,
       });
 
       detector.start(container);
@@ -279,6 +280,69 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
       expect(onDone).not.toHaveBeenCalled();
 
       detector.destroy();
+    });
+
+    it('prevents completion when Markdown code block is unclosed', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+
+      const stopBtn = document.createElement('button');
+      stopBtn.disabled = true;
+      document.body.appendChild(stopBtn);
+
+      const sendBtn = document.createElement('button');
+      sendBtn.disabled = false;
+      document.body.appendChild(sendBtn);
+
+      // 代码块未闭合（奇数个 ```）
+      const unclosedContent = '## 审查评估报告\n\n```typescript\nfunction test() {\n  return 42;\n';
+      const onDone = vi.fn();
+      const detector = new QuadSignalDoneDetector({
+        getStopButton: () => stopBtn,
+        getSendButton: () => sendBtn,
+        getCurrentContent: () => unclosedContent,
+        onDone,
+        onUpdate: vi.fn(),
+        silenceThresholdMs: 2000,
+      });
+
+      detector.start(container);
+
+      // 超过 2000ms 静默，但因代码块未闭合，严禁判定完成！
+      vi.advanceTimersByTime(3000);
+      expect(onDone).not.toHaveBeenCalled();
+
+      // 在 25s 极限保护内依然保持守候
+      vi.advanceTimersByTime(10000);
+      expect(onDone).not.toHaveBeenCalled();
+
+      detector.destroy();
+    });
+  });
+
+  describe('isMarkdownStructurallyIncomplete', () => {
+    it('detects unclosed code blocks', () => {
+      expect(isMarkdownStructurallyIncomplete('```typescript\nconsole.log(1);')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('```typescript\nconsole.log(1);\n```')).toBe(false);
+      expect(isMarkdownStructurallyIncomplete('```ts\na\n```\n```ts\nb')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('```ts\na\n```\n```ts\nb\n```')).toBe(false);
+    });
+
+    it('detects hanging headings and list markers', () => {
+      expect(isMarkdownStructurallyIncomplete('# 标题一\n### ')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('# 标题一\n### 标题二')).toBe(false);
+      expect(isMarkdownStructurallyIncomplete('清单：\n- ')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('清单：\n- 第一项')).toBe(false);
+      expect(isMarkdownStructurallyIncomplete('步骤：\n1. ')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('步骤：\n1. 执行第一步')).toBe(false);
+    });
+
+    it('detects hanging punctuation', () => {
+      expect(isMarkdownStructurallyIncomplete('缺陷如下：')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('缺陷如下，')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('缺陷如下（')).toBe(true);
+      expect(isMarkdownStructurallyIncomplete('缺陷如下。')).toBe(false);
+      expect(isMarkdownStructurallyIncomplete('| 列1 | 列2 |')).toBe(false);
     });
   });
 });

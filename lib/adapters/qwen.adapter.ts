@@ -293,44 +293,80 @@ export class QwenAdapter implements AISiteAdapter {
       getStopButton: () => this.findStopButton(),
       getSendButton: () => this.findSendButton(),
       getCurrentContent: () => {
-        const lastMsgEl = this.findLatestAssistantMessageElement();
-        if (!lastMsgEl) return '';
+        const lastUserEl = this.findLatestUserMessageElement();
+        let candidateContainers: HTMLElement[] = [];
 
-        if (lastMsgEl === this.baselineLastElement) {
-          const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
-          if (currentText === this.baselineLastContent) {
-            return '';
-          }
+        // 1. 若定位到了用户最后一条输入，获取在其后生成的所有 markdown 正文容器（彻底防止多卡片被截断）
+        if (lastUserEl) {
+          const allMd = Array.from(
+            document.querySelectorAll<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]')
+          ).filter((el) => {
+            const userAncestor = el.closest('[class*="user"], [class*="question"], [class*="query"], [data-role="user"], [class*="prompt"]');
+            if (userAncestor) return false;
+            const cls = (el.className || '').toString().toLowerCase();
+            if (cls.includes('user') || cls.includes('question') || cls.includes('query')) return false;
+            return (lastUserEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+          });
+
+          candidateContainers = allMd.filter((el) => {
+            return !el.parentElement?.closest('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
+          });
         }
 
-        // DOM 克隆净化：彻底剔除思考块、工具栏与各类操作按钮（保留正常正文内容）
-        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
-        clone
-          .querySelectorAll(
-            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
-          )
-          .forEach((el) => el.remove());
-
-        // 查找所有顶层 markdown 容器（避免因部分小声明卡片导致主体回答被忽略）
-        const mdContainers = Array.from(
-          clone.querySelectorAll<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]')
-        ).filter((el) => {
-          return !el.parentElement?.closest('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
-        });
-
+        // 2. 提取文本：优先聚合用户输入后渲染的全部顶层容器
         let result = '';
-        if (mdContainers.length > 0) {
-          result = mdContainers
+        if (candidateContainers.length > 0) {
+          result = candidateContainers
             .map((el) => {
-              const md = domToMarkdown(el);
-              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+              const clone = el.cloneNode(true) as HTMLElement;
+              clone
+                .querySelectorAll(
+                  'div[class*="think"], div[class*="reasoning"], div[class*="thought"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
+                )
+                .forEach((node) => node.remove());
+              const md = domToMarkdown(clone);
+              return (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
             })
             .filter((t) => t.trim().length > 0)
             .join('\n\n');
         }
 
-        // 兜底：若没有找到独立的 markdown 容器，或者容器提取字数过少，直接转换整轮
-        if (result.trim().length < 50) {
+        // 3. 兜底与轮次全量合并：若按用户后序未抓到或字数较少，结合 findLatestAssistantMessageElement()
+        const lastMsgEl = this.findLatestAssistantMessageElement();
+        if (lastMsgEl) {
+          if (lastMsgEl === this.baselineLastElement) {
+            const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+            if (currentText === this.baselineLastContent && !result) {
+              return '';
+            }
+          }
+
+          // DOM 克隆净化：彻底剔除思考块、工具栏与各类操作按钮
+          const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll(
+              'div[class*="think"], div[class*="reasoning"], div[class*="thought"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
+            )
+            .forEach((el) => el.remove());
+
+          // 查找所有顶层 markdown 容器
+          const mdContainers = Array.from(
+            clone.querySelectorAll<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]')
+          ).filter((el) => {
+            return !el.parentElement?.closest('div.qwen-markdown, div.markdown-body, div[class*="markdown"]');
+          });
+
+          if (mdContainers.length > 0 && !result) {
+            result = mdContainers
+              .map((el) => {
+                const md = domToMarkdown(el);
+                return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+              })
+              .filter((t) => t.trim().length > 0)
+              .join('\n\n');
+          }
+
+          // 核心：若 clone 全文本长度大于当前提取结果，取更完整的 fullText
           const fullMd = domToMarkdown(clone);
           const fullText = (fullMd && fullMd.trim().length > 0) ? fullMd : (clone.innerText || clone.textContent || '').trim();
           if (fullText.length > result.length) {
@@ -338,7 +374,7 @@ export class QwenAdapter implements AISiteAdapter {
           }
         }
         
-        // 核心防护：若当前内容完全属于思考块（如“已经完成思考”或思考折叠）或少于 35 字符的思考占位，正文返回空以令 Detector 保持守候
+        // 核心防护：若当前内容完全属于思考块或少于 35 字符的思考占位，正文返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
         if (cleaned.length < 35) {
           return '';
@@ -378,7 +414,7 @@ export class QwenAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 12000,
       userPrompt: this.lastPrompt,
     });
 
@@ -577,6 +613,25 @@ export class QwenAdapter implements AISiteAdapter {
       document.querySelector<HTMLElement>('button[class*="stop"]') ||
       document.querySelector<HTMLElement>('div[class*="stop-btn"]')
     );
+  }
+
+  private findLatestUserMessageElement(): HTMLElement | null {
+    const userNodes = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[class*="chat-item-user"], div[class*="message-item-user"], div[class*="user-item"], div[class*="message-user"], div[class*="user-message"], [data-role="user"], div[class*="chat-message"][class*="user"], div[class*="user"]'
+      )
+    ).filter((el) => {
+      const cls = (el.className || '').toString().toLowerCase();
+      return (
+        !cls.includes('input') &&
+        !cls.includes('fixed') &&
+        !cls.includes('editor') &&
+        !cls.includes('textarea') &&
+        !cls.includes('header') &&
+        !cls.includes('dialog')
+      );
+    });
+    return userNodes.length > 0 ? userNodes[userNodes.length - 1]! : null;
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {

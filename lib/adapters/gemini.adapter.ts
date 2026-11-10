@@ -268,7 +268,7 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 3500,
+      silenceThresholdMs: 12000,
     });
 
     this.activeDetector.start(chatContainer);

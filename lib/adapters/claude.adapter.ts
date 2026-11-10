@@ -253,7 +253,7 @@ export class ClaudeAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 5000,
+      silenceThresholdMs: 12000,
       userPrompt: this.lastPrompt,
     });
 
