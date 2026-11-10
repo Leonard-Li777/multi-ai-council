@@ -77,7 +77,7 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
   });
 
   describe('QuadSignalDoneDetector convergence logic', () => {
-    it('successfully converges to DONE when stop button is disabled and content is stable', async () => {
+    it('successfully converges to DONE for long content when stop button is disabled and content is stable', async () => {
       const container = document.createElement('div');
       document.body.appendChild(container);
 
@@ -89,7 +89,7 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
       sendBtn.setAttribute('aria-label', 'Send');
       document.body.appendChild(sendBtn);
 
-      let currentContent = '这是长篇规格说明书审查评估报告，字数已经超过六十字符以满足稳定与收敛条件。';
+      let currentContent = '这是长篇规格说明书审查评估报告，字数已经大幅超过一百字符以满足稳定与收敛条件。我们对架构设计、接口一致性、高并发容灾、回滚策略以及各类边界场景进行了全方位的盲审与代码事实核验，各项指标均已达到交付基线。';
       let doneResult = '';
       const onDone = vi.fn((content: string) => {
         doneResult = content;
@@ -124,6 +124,44 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
 
       expect(onDone).toHaveBeenCalledTimes(1);
       expect(doneResult).toContain('这是长篇规格说明书审查评估报告');
+
+      detector.destroy();
+    });
+
+    it('enforces longer silence period for short content (<100 chars) to prevent premature convergence', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+
+      const stopBtn = document.createElement('button');
+      document.body.appendChild(stopBtn);
+      stopBtn.disabled = true;
+
+      const sendBtn = document.createElement('button');
+      document.body.appendChild(sendBtn);
+      sendBtn.disabled = false;
+
+      // 模拟仅输出了 42 字符的开头标题（如“# 外部红队审查结论报告 ## 一、首尾双锚定唤醒自检 - **系统底线契约”）
+      const shortContent = '# 外部红队审查结论报告 ## 一、首尾双锚定唤醒自检 - **系统底线契约';
+      const onDone = vi.fn();
+
+      const detector = new QuadSignalDoneDetector({
+        getStopButton: () => stopBtn,
+        getSendButton: () => sendBtn,
+        getCurrentContent: () => shortContent,
+        onDone,
+        onUpdate: vi.fn(),
+        silenceThresholdMs: 2000,
+      });
+
+      detector.start(container);
+
+      // 短暂静默 2500ms：短字数门禁必须拦截，严禁触发 done！
+      vi.advanceTimersByTime(2500);
+      expect(onDone).not.toHaveBeenCalled();
+
+      // 经历长静默并超过 60s 安全排队宽限期后才允许兜底完成 (60s 排队 + 15s 观察)
+      vi.advanceTimersByTime(80000);
+      expect(onDone).toHaveBeenCalledTimes(1);
 
       detector.destroy();
     });

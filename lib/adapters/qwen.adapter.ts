@@ -301,11 +301,11 @@ export class QwenAdapter implements AISiteAdapter {
           }
         }
 
-        // DOM 克隆净化：彻底剔除思考折叠块、工具栏与各类操作按钮
+        // DOM 克隆净化：彻底剔除思考块、工具栏与各类操作按钮（保留正常正文内容）
         const clone = lastMsgEl.cloneNode(true) as HTMLElement;
         clone
           .querySelectorAll(
-            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], div[class*="collapse"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
+            'div[class*="think"], div[class*="reasoning"], div[class*="thought"], [class*="think-container"], div[class*="action"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [role="toolbar"], button, div[class*="avatar"], div[class*="icon"]'
           )
           .forEach((el) => el.remove());
 
@@ -476,16 +476,35 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   private findSendButton(): HTMLElement | null {
-    const direct = document.querySelector<HTMLElement>(
-      'button[type="submit"], button[class*="send-button"], button[class*="sendBtn"], div[class*="sendBtn"], div[class*="send-btn"], button[class*="submit"], div[class*="submit"], button[aria-label*="发送"], button[aria-label*="Send"], div[role="button"][class*="send"], button[class*="send"], button.ant-btn-primary'
-    );
-    if (direct) return direct;
-
     const input = this.findInputElement();
+    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="input"], div[class*="sender"]') as HTMLElement | null) : null;
+    const searchRoot = container || document;
+
+    // 在输入区域内查找所有候选按钮
+    const candidates = Array.from(
+      searchRoot.querySelectorAll<HTMLElement>(
+        'button[type="submit"], button[class*="send-button"], button[class*="sendBtn"], div[class*="sendBtn"], div[class*="send-btn"], button[class*="submit"], div[class*="submit"], button[aria-label*="发送"], button[aria-label*="Send"], div[role="button"][class*="send"], button[class*="send"], button.ant-btn-primary'
+      )
+    );
+
+    // 核心安全过滤：坚决剔除正在处于停止态（包含 rect、stop 语义、loading 旋转）的按钮！
+    const sendBtn = candidates.find((b) => {
+      if (this.isStopActionElement(b)) return false;
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      if (aria.includes('file') || aria.includes('upload') || aria.includes('attach') || aria.includes('audio')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (sendBtn) return sendBtn;
+
+    // 兜底递归父级
     let parent = input?.parentElement;
     for (let i = 0; i < 6 && parent; i++) {
-      const candidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], button'));
-      const found = candidates.reverse().find(b => {
+      const parentCandidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], button'));
+      const found = parentCandidates.reverse().find(b => {
+        if (this.isStopActionElement(b)) return false;
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         const cls = (b.className || '').toString().toLowerCase();
         const type = (b.getAttribute('type') || '').toLowerCase();
@@ -500,16 +519,43 @@ export class QwenAdapter implements AISiteAdapter {
     return null;
   }
 
+  private isStopActionElement(el: HTMLElement | null): boolean {
+    if (!el) return false;
+    const aria = (el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase();
+    if (aria.includes('停止') || aria.includes('stop') || aria.includes('pause') || aria.includes('取消生成')) {
+      return true;
+    }
+    const cls = (el.className || '').toString().toLowerCase();
+    if (cls.includes('stop') || cls.includes('loading') || cls.includes('ant-btn-loading')) {
+      return true;
+    }
+    // 检查是否包含方形停止图标（如 <rect> 或含 stop 特征的 SVG）
+    if (el.querySelector('rect, [class*="stop"], [class*="pause"], [class*="square"]')) {
+      return true;
+    }
+    return false;
+  }
+
   private findStopButton(): HTMLElement | null {
     const input = this.findInputElement();
-    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="input"]') as HTMLElement | null) : null;
+    const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="input"], div[class*="sender"]') as HTMLElement | null) : null;
     const searchRoot = container || document;
 
+    // 1. 查找输入区域内明确具备 stop 特征的按钮
+    const candidates = Array.from(
+      searchRoot.querySelectorAll<HTMLElement>(
+        'button, div[role="button"], span[role="button"]'
+      )
+    );
+    const stopBtn = candidates.find((b) => this.isStopActionElement(b));
+    if (stopBtn) return stopBtn;
+
+    // 2. 兜底全局选择器
     return (
-      searchRoot.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
+      searchRoot.querySelector<HTMLElement>('button[aria-label*="停止"], button[aria-label*="Stop"]') ||
       searchRoot.querySelector<HTMLElement>('button[class*="stop"]') ||
       searchRoot.querySelector<HTMLElement>('div[class*="stop-btn"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止"], button[aria-label*="Stop"]') ||
       document.querySelector<HTMLElement>('button[class*="stop"]') ||
       document.querySelector<HTMLElement>('div[class*="stop-btn"]')
     );
@@ -528,8 +574,13 @@ export class QwenAdapter implements AISiteAdapter {
     });
 
     if (turns.length > 0) {
-      // 核心：直接返回最新完整轮次容器，由上层净化并聚合所有 markdown 块，杜绝局部段落截断
-      return turns[turns.length - 1]!;
+      // 核心：过滤掉嵌套在其它同类候选容器内部的子元素，保证获取到的是最外层的完整轮次
+      const topLevelTurns = turns.filter((el) => {
+        return !el.parentElement?.closest(
+          'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]'
+        );
+      });
+      return (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : turns[turns.length - 1]) ?? null;
     }
 
     // 2. 降级：查找全量 qwen-markdown 容器中的最后一个

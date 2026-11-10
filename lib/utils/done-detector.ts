@@ -101,8 +101,9 @@ export class QuadSignalDoneDetector {
     const isSendActive = isElementActiveAndVisible(sendBtn);
 
     // 核心判定：
-    // 若可见且未被禁用的停止按钮存在，且发送按钮未处于激活就绪状态，确立为正在生成中
-    const isGenerating = isStopActive && !isSendActive;
+    // 若可见且未被禁用的停止按钮存在，确立为正在生成中
+    // 只有当发送按钮明确处于激活就绪状态，且发送按钮与停止按钮并非同一 DOM 实体时，才视为可能生成结束
+    const isGenerating = isStopActive && !(sendBtn && sendBtn !== stopBtn && isSendActive);
 
     // 关键状态记录：一旦看见处于激活态的停止按钮，确立进入过生成态
     if (isGenerating) {
@@ -134,10 +135,10 @@ export class QuadSignalDoneDetector {
       return;
     }
 
-    // 核心防早熟门禁（防 15/23 字误裁决）：
-    // 若当前字数极短（< 60字），且尚未真正经历过生成态，这必定是 TTFT 排队、骨架屏或思考头，严禁短静默触发完成！
+    // 核心防早熟门禁（防 15/23/42 字误裁决）：
+    // 若当前字数极短（< 80字），且尚未真正经历过生成态，这必定是 TTFT 排队、骨架屏或思考慢，严禁短静默触发完成！
     const elapsedMs = Date.now() - this.startTime;
-    if (currentLen < 60 && !this.hasEverGenerated && elapsedMs < 20000) {
+    if (currentLen < 80 && !this.hasEverGenerated && elapsedMs < 60000) {
       if (this.silenceTimer) {
         window.clearTimeout(this.silenceTimer);
         this.silenceTimer = null;
@@ -145,14 +146,19 @@ export class QuadSignalDoneDetector {
       return;
     }
 
-    // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= silenceThresholdMs 即判定完成）
+    // 信号 2 & 3：静默计时 + 长度稳定（当停止按钮消失且内容稳定 >= effectiveSilenceMs 即判定完成）
     if (!this.silenceTimer) {
       this.lastContentLength = currentLen;
+      // 动态静默门禁：正文极短 (<100字) 时，极可能是刚输出了标题或遇到模型流式间隙停顿，维持至少 15 秒静默，严防早熟早收敛
+      const effectiveSilenceMs = currentLen < 100
+        ? Math.max(this.options.silenceThresholdMs || 4500, 15000)
+        : (this.options.silenceThresholdMs || 4500);
+
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();
         const latestStop = this.options.getStopButton();
         const latestSend = this.options.getSendButton();
-        const stillGenerating = isElementActiveAndVisible(latestStop) && !isElementActiveAndVisible(latestSend);
+        const stillGenerating = isElementActiveAndVisible(latestStop) && !(latestSend && latestSend !== latestStop && isElementActiveAndVisible(latestSend));
 
         // 再次确认内容长度稳定、非思考占位词、且不再处于生成中
         if (
@@ -161,9 +167,8 @@ export class QuadSignalDoneDetector {
           !isThinkingOnly(latestContent) &&
           !stillGenerating
         ) {
-          // 双重确认：极短内容必须满足安全宽限时间或发送按钮恢复就绪
-          const sendActive = isElementActiveAndVisible(latestSend);
-          if (latestContent.trim().length < 60 && !sendActive && Date.now() - this.startTime < 20000) {
+          // 双重确认：极短内容 (<60字) 严禁在 30 秒内触发完成
+          if (latestContent.trim().length < 60 && Date.now() - this.startTime < 30000) {
             this.silenceTimer = null;
             return;
           }
@@ -174,7 +179,7 @@ export class QuadSignalDoneDetector {
           // 长度还在变动或仍在生成中，继续等待
           this.silenceTimer = null;
         }
-      }, this.options.silenceThresholdMs);
+      }, effectiveSilenceMs);
     }
   }
 

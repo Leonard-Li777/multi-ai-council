@@ -884,20 +884,20 @@ export default defineBackground(() => {
       });
       broadcastJobSync(updated);
 
-      // 健壮防护：若站点进入 SENDING 达到 25 秒仍未响应转为 STREAMING 或 DONE，自动超时标记避免挂死
+      // 健壮防护：若站点进入 SENDING 达到 120 秒仍未响应转为 STREAMING 或 DONE，自动超时标记避免挂死（针对 DeepSeek-R1、Qwen-Thinking、Claude 等深度思考长耗时模型预留充足思考窗口）
       setTimeout(async () => {
         const curJob = await getActiveJob();
         if (curJob?.id === jobId && curJob.providerRuns[siteName]?.status === 'SENDING') {
-          console.warn(`[Background] Site ${siteName} hung in SENDING for 25s, auto-failing to unblock`);
+          console.warn(`[Background] Site ${siteName} hung in SENDING for 120s, auto-failing to unblock`);
           flightRecorder.warn(siteName, 'SENDING_TIMEOUT_AUTORECOVER', { jobId });
           const failedJob = await updateProviderRun(jobId, siteName, {
             status: 'FAILED',
-            errorReason: `${siteName} 提交超时未响应，请点击卡片重试`,
+            errorReason: `${siteName} 深度思考或网络响应超时（已等待 120 秒），请点击卡片重试`,
           });
           broadcastJobSync(failedJob);
           await checkAutoTriggerSynthesis(jobId);
         }
-      }, 25000);
+      }, 120000);
     } else {
       flightRecorder.warn(siteName, 'DISPATCH_WAITING', { jobId });
       flightRecorder.warn('Background', 'DISPATCH_WAITING', { siteName, jobId });
