@@ -103,23 +103,34 @@ export async function getActiveJob(): Promise<ReviewJob | null> {
   return null;
 }
 
+let updateQueue: Promise<any> = Promise.resolve();
+
 /**
- * 局部幂等更新单个站点的 Run 状态
+ * 局部幂等更新单个站点的 Run 状态（支持严格串行化防踩踏队列）
  */
 export async function updateProviderRun(
   jobId: string,
   siteName: SupportedSite,
   update: Partial<ProviderRun>
 ): Promise<ReviewJob | null> {
-  const job = await getActiveJob();
-  if (!job || job.id !== jobId) {
-    // 尝试从 IDB 读取指定 ID
-    const db = await getDB();
-    const storedJob = await db.get('jobs', jobId);
-    if (!storedJob) return null;
-    return updateRunInternal(storedJob, siteName, update);
-  }
-  return updateRunInternal(job, siteName, update);
+  // 使用 Promise 队列进行串行化更新，防止多站点高频并发 read-modify-write 导致已完成的状态被覆盖回 STREAMING
+  const task = updateQueue.then(async () => {
+    const job = await getActiveJob();
+    if (!job || job.id !== jobId) {
+      // 尝试从 IDB 读取指定 ID
+      const db = await getDB();
+      const storedJob = await db.get('jobs', jobId);
+      if (!storedJob) return null;
+      return updateRunInternal(storedJob, siteName, update);
+    }
+    return updateRunInternal(job, siteName, update);
+  }).catch((err) => {
+    console.error('[JobStore] updateProviderRun error:', err);
+    return null;
+  });
+
+  updateQueue = task;
+  return task;
 }
 
 async function updateRunInternal(
@@ -135,8 +146,8 @@ async function updateRunInternal(
     retryCount: 0,
   };
 
-  // 终态保护：一旦被 CANCELED 或 TAB_CLOSED，忽略后续迟到的流式 STREAMING / DONE 状态覆写
-  const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED';
+  // 终态保护：一旦达到 DONE、CANCELED 或 TAB_CLOSED，忽略后续迟到的流式 STREAMING 状态覆写
+  const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED' || currentRun.status === 'DONE';
   const isReactivation =
     update.status === 'PENDING' || update.status === 'OPENING_TAB' || update.status === 'WAITING_READY';
 

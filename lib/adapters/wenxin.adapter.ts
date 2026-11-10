@@ -8,6 +8,29 @@ import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
 import { flightRecorder } from '../logger/flight-recorder';
 
+function isWenxinUserTurnElement(el: HTMLElement): boolean {
+  if (
+    el.getAttribute('data-role') === 'user' ||
+    el.getAttribute('data-is-user') === 'true' ||
+    el.getAttribute('data-message-author-role') === 'user'
+  ) {
+    return true;
+  }
+  const cls = (el.className || '').toString().toLowerCase();
+  // 必须严格排除 CSS 禁选属性如 user-select-none，杜绝代码块被误判为用户提问
+  if (cls.includes('user-select') || cls.includes('userselect')) {
+    return false;
+  }
+  return (
+    cls.includes('user-message') ||
+    cls.includes('message-user') ||
+    cls.includes('chat-item-user') ||
+    cls.includes('dialogue-user') ||
+    cls.includes('item-user') ||
+    cls.includes('robot-item-user')
+  );
+}
+
 export class WenxinAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Wenxin';
   public readonly urlPattern = /^https:\/\/(wenxin|yiyan)\.baidu\.com(\/.*)?$/;
@@ -211,10 +234,12 @@ export class WenxinAdapter implements AISiteAdapter {
               'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
             )
           ).filter((el) => {
-            const userAncestor = el.closest('[class*="user"], [class*="human"], [class*="self"], [data-role="user"]');
-            if (userAncestor) return false;
-            const cls = (el.className || '').toString().toLowerCase();
-            if (cls.includes('user') || cls.includes('input') || cls.includes('editor')) return false;
+            let parent = el.parentElement;
+            while (parent && parent !== document.body) {
+              if (isWenxinUserTurnElement(parent)) return false;
+              parent = parent.parentElement;
+            }
+            if (isWenxinUserTurnElement(el)) return false;
             return (lastUserEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
           });
 
@@ -500,20 +525,12 @@ export class WenxinAdapter implements AISiteAdapter {
   private findLatestUserMessageElement(): HTMLElement | null {
     const userNodes = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="chat-message"], div[class*="ans-item"], div[class*="robot-item"], div[class*="dialogue"], div[class*="item"], div[class*="message"], [data-role="user"], [data-is-user="true"], div[class*="user"], div[class*="human"]'
+        'div[class*="chat-message"], div[class*="ans-item"], div[class*="robot-item"], div[class*="dialogue"], div[class*="item"], div[class*="message"], [data-role="user"]'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      const role = (el.getAttribute('data-role') || '').toLowerCase();
       const isInput = cls.includes('input') || cls.includes('editor') || cls.includes('fixed') || cls.includes('textarea');
-      return (
-        !isInput &&
-        (cls.includes('user') ||
-          cls.includes('human') ||
-          cls.includes('self') ||
-          role === 'user' ||
-          el.getAttribute('data-is-user') === 'true')
-      );
+      return !isInput && isWenxinUserTurnElement(el);
     });
     return userNodes.length > 0 ? userNodes[userNodes.length - 1]! : null;
   }
@@ -542,16 +559,8 @@ export class WenxinAdapter implements AISiteAdapter {
 
     const turns = Array.from(document.querySelectorAll<HTMLElement>(turnSelectors.join(', '))).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      const role = (el.getAttribute('data-role') || '').toLowerCase();
-      const isUser =
-        cls.includes('user') ||
-        cls.includes('human') ||
-        cls.includes('self') ||
-        cls.includes('right') ||
-        role === 'user' ||
-        el.getAttribute('data-is-user') === 'true';
       const isInput = cls.includes('input') || cls.includes('fixed') || cls.includes('editor') || cls.includes('textarea');
-      return !isUser && !isInput;
+      return !isWenxinUserTurnElement(el) && !isInput;
     });
 
     if (turns.length > 0) {
@@ -587,15 +596,23 @@ export class WenxinAdapter implements AISiteAdapter {
         'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="markdown-body"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"]'
       )
     ).filter((el) => {
-      const cls = (el.className || '').toLowerCase();
-      const parentCls = (el.parentElement?.className || '').toLowerCase();
-      const isInput = cls.includes('input') || cls.includes('editor') || parentCls.includes('input') || parentCls.includes('editor');
-      const isUser = cls.includes('user') || parentCls.includes('user');
-      return !isInput && !isUser;
+      let parent = el.parentElement;
+      while (parent && parent !== document.body) {
+        if (isWenxinUserTurnElement(parent)) return false;
+        parent = parent.parentElement;
+      }
+      return !isWenxinUserTurnElement(el);
     });
 
     if (mdList.length > 0) {
-      return mdList[mdList.length - 1] ?? null;
+      const lastMd = mdList[mdList.length - 1]!;
+      const parentMsg = lastMd.closest<HTMLElement>(
+        'div[class*="item"], div[class*="message"], div[class*="dialogue"], div[class*="content"]'
+      );
+      if (parentMsg && !isWenxinUserTurnElement(parentMsg)) {
+        return parentMsg;
+      }
+      return lastMd;
     }
 
     // 3. 降级：通过助手专属工具栏（如“复制回答”、“重新生成”等按钮）定位父级回答容器
@@ -609,7 +626,7 @@ export class WenxinAdapter implements AISiteAdapter {
       const parentMsg = btn.closest<HTMLElement>(
         'div[class*="item"], div[class*="message"], div[class*="dialogue"], div[class*="content"]'
       );
-      if (parentMsg) {
+      if (parentMsg && !isWenxinUserTurnElement(parentMsg)) {
         return parentMsg;
       }
     }
@@ -621,7 +638,7 @@ export class WenxinAdapter implements AISiteAdapter {
       )
     ).filter((b) => {
       const cls = (b.className || '').toLowerCase();
-      return !cls.includes('user') && !cls.includes('self') && !cls.includes('human') && !cls.includes('input');
+      return !isWenxinUserTurnElement(b) && !cls.includes('input');
     });
 
     if (allBubbles.length > 0) {

@@ -60,4 +60,37 @@ describe('ChatGPT Adapter & Contract Conformance', () => {
     // 清理
     document.body.innerHTML = '';
   });
+
+  it('should accurately locate assistant message in modern ChatGPT article structure without role attributes', () => {
+    document.body.innerHTML = '';
+
+    // 用户提问 article（包含编辑按钮）
+    const userArticle = document.createElement('article');
+    const userEditBtn = document.createElement('button');
+    userEditBtn.setAttribute('aria-label', 'Edit message');
+    userArticle.appendChild(userEditBtn);
+    const userText = document.createElement('div');
+    userText.textContent = '请审查以下规格书方案';
+    userArticle.appendChild(userText);
+    document.body.appendChild(userArticle);
+
+    // 助手回复 article（现代 ChatGPT 架构：无 data-message-author-role，包含复制按钮）
+    const assistantArticle = document.createElement('article');
+    const assistantMarkdown = document.createElement('div');
+    assistantMarkdown.className = 'markdown prose w-full break-words';
+    assistantMarkdown.innerHTML = '<h2>外部红队审查报告</h2><p>经全面穷尽推演，发现以下阻断缺陷：</p>';
+    assistantArticle.appendChild(assistantMarkdown);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.setAttribute('aria-label', 'Copy response');
+    assistantArticle.appendChild(copyBtn);
+    document.body.appendChild(assistantArticle);
+
+    // 调用内部查找
+    const found = (chatGPTAdapter as any).findLatestAssistantMessageElement();
+    expect(found).not.toBeNull();
+    expect(found?.textContent).toContain('外部红队审查报告');
+
+    document.body.innerHTML = '';
+  });
 });

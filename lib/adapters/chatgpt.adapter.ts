@@ -560,37 +560,77 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有 assistant 消息容器（精准匹配 role="assistant"）
+    // 1. 查找所有包含 assistant 标记的明确容器
     const assistantRoles = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-message-author-role="assistant"]')
+      document.querySelectorAll<HTMLElement>(
+        '[data-message-author-role="assistant"], [data-message-model-slug], div[class*="agent-turn"]'
+      )
     );
     if (assistantRoles.length > 0) {
       const last = assistantRoles[assistantRoles.length - 1]!;
-      const md = last.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || last;
+      const md = last.querySelector<HTMLElement>(
+        '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
+      ) || last;
       if ((md.textContent || '').trim().length > 0) {
         return md;
       }
     }
 
-    // 2. 查找包含 assistant 的 conversation-turn article，排除包含 user 角色的卡片
-    const articles = Array.from(
-      document.querySelectorAll<HTMLElement>('article[data-testid*="conversation-turn"]')
-    );
+    // 2. 现代 ChatGPT 核心架构：所有聊天轮次均为 article 标签
+    // 严格通过用户编辑按钮 (Edit / 编辑) 或 user 角色排除用户提问卡片
+    const isUserArticle = (art: HTMLElement): boolean => {
+      if (art.getAttribute('data-message-author-role') === 'user') return true;
+      if (art.querySelector('[data-message-author-role="user"]')) return true;
+      if (art.querySelector('button[aria-label*="Edit"], button[aria-label*="编辑"]')) return true;
+      return false;
+    };
+
+    const articles = Array.from(document.querySelectorAll<HTMLElement>('article'));
     if (articles.length > 0) {
-      const nonUserArticles = articles.filter(
-        (art) => !art.querySelector('[data-message-author-role="user"]')
-      );
+      const nonUserArticles = articles.filter((art) => !isUserArticle(art));
       if (nonUserArticles.length > 0) {
         const lastArt = nonUserArticles[nonUserArticles.length - 1]!;
-        const md = lastArt.querySelector<HTMLElement>('.markdown, .prose, div[class*="markdown"]') || lastArt;
+        const md = lastArt.querySelector<HTMLElement>(
+          '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
+        ) || lastArt;
         if ((md.textContent || '').trim().length > 0) {
           return md;
         }
       }
     }
 
-    // 3. 降级：查询页面中所有的 .markdown 或 .prose 容器（ChatGPT 仅在 Assistant 回复中使用 .markdown）
-    const mdElements = Array.from(document.querySelectorAll<HTMLElement>('.markdown, .prose'));
+    // 3. 特征锚点定位：通过助手专属操作按钮（复制回答、点赞/点踩、朗读）反向溯源所属卡片
+    const assistantButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[aria-label*="Copy"], button[aria-label*="复制"], button[aria-label*="Good response"], button[aria-label*="赞"], [data-testid*="copy"]'
+      )
+    );
+    for (let i = assistantButtons.length - 1; i >= 0; i--) {
+      const btn = assistantButtons[i]!;
+      const turnContainer = btn.closest<HTMLElement>(
+        'article, div[class*="agent-turn"], div[data-message-id], div[class*="conversation-turn"]'
+      );
+      if (turnContainer && !isUserArticle(turnContainer)) {
+        const md = turnContainer.querySelector<HTMLElement>(
+          '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
+        ) || turnContainer;
+        if ((md.textContent || '').trim().length > 0) {
+          return md;
+        }
+      }
+    }
+
+    // 4. 降级：查询页面中所有的 markdown / prose / 富文本容器
+    const mdElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'div[class*="markdown"], div[class*="prose"], .markdown, .prose, div[class*="text-message"]'
+      )
+    ).filter((el) => {
+      const art = el.closest('article');
+      if (art && isUserArticle(art)) return false;
+      return true;
+    });
+
     if (mdElements.length > 0) {
       const lastMd = mdElements[mdElements.length - 1]!;
       if ((lastMd.textContent || '').trim().length > 0) {

@@ -8,6 +8,29 @@ import { QuadSignalDoneDetector } from '../utils/done-detector';
 import { isLoginButtonPresent } from '../utils/dom-checker';
 import { flightRecorder } from '../logger/flight-recorder';
 
+function isUserTurnElement(el: HTMLElement): boolean {
+  if (
+    el.getAttribute('data-role') === 'user' ||
+    el.getAttribute('data-is-user') === 'true' ||
+    el.getAttribute('data-message-author-role') === 'user'
+  ) {
+    return true;
+  }
+  const cls = (el.className || '').toString().toLowerCase();
+  // 必须严格排除 CSS 禁选属性如 user-select-none，杜绝代码块工具栏被误判为用户提问
+  if (cls.includes('user-select') || cls.includes('userselect')) {
+    return false;
+  }
+  return (
+    cls.includes('chat-item-user') ||
+    cls.includes('message-item-user') ||
+    cls.includes('user-message') ||
+    cls.includes('message-user') ||
+    cls.includes('user-item') ||
+    cls.includes('user-turn')
+  );
+}
+
 export class QwenAdapter implements AISiteAdapter {
   public readonly siteName: SupportedSite = 'Qwen';
   public readonly urlPattern = /^https:\/\/chat\.qwen\.ai(\/.*)?$/;
@@ -301,10 +324,12 @@ export class QwenAdapter implements AISiteAdapter {
           const allMd = Array.from(
             document.querySelectorAll<HTMLElement>('div.qwen-markdown, div.markdown-body, div[class*="markdown"]')
           ).filter((el) => {
-            const userAncestor = el.closest('[class*="user"], [class*="question"], [class*="query"], [data-role="user"], [class*="prompt"]');
-            if (userAncestor) return false;
-            const cls = (el.className || '').toString().toLowerCase();
-            if (cls.includes('user') || cls.includes('question') || cls.includes('query')) return false;
+            let parent = el.parentElement;
+            while (parent && parent !== document.body) {
+              if (isUserTurnElement(parent)) return false;
+              parent = parent.parentElement;
+            }
+            if (isUserTurnElement(el)) return false;
             return (lastUserEl.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
           });
 
@@ -618,70 +643,76 @@ export class QwenAdapter implements AISiteAdapter {
   private findLatestUserMessageElement(): HTMLElement | null {
     const userNodes = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="chat-item-user"], div[class*="message-item-user"], div[class*="user-item"], div[class*="message-user"], div[class*="user-message"], [data-role="user"], div[class*="chat-message"][class*="user"], div[class*="user"]'
+        'div[class*="chat-item-user"], div[class*="message-item-user"], div[class*="user-item"], div[class*="message-user"], div[class*="user-message"], [data-role="user"]'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      return (
-        !cls.includes('input') &&
-        !cls.includes('fixed') &&
-        !cls.includes('editor') &&
-        !cls.includes('textarea') &&
-        !cls.includes('header') &&
-        !cls.includes('dialog')
-      );
+      if (cls.includes('input') || cls.includes('fixed') || cls.includes('editor') || cls.includes('dialog')) return false;
+      return isUserTurnElement(el);
     });
     return userNodes.length > 0 ? userNodes[userNodes.length - 1]! : null;
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框、编辑器容器与任何用户卡片）
+    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框、编辑器容器与用户卡片）
     const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="user"]):not([class*="input"]):not([class*="fixed"]):not([class*="bottom"]):not([class*="editor"]):not([class*="textarea"])'
+        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="bottom"]):not([class*="editor"]):not([class*="textarea"])'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      // 坚决排除任何包含 input、fixed、editor、user、query、question 的卡片
-      return (
-        !cls.includes('input') &&
-        !cls.includes('fixed') &&
-        !cls.includes('editor') &&
-        !cls.includes('user') &&
-        !cls.includes('query') &&
-        !cls.includes('question')
-      );
+      if (cls.includes('input') || cls.includes('fixed') || cls.includes('editor')) return false;
+      return !isUserTurnElement(el);
     });
 
     if (turns.length > 0) {
-      // 核心：过滤掉嵌套在其它同类候选容器内部的子元素，保证获取到的是最外层的完整轮次
+      // 过滤掉嵌套在其它同类候选容器内部的子元素，保证获取到的是最外层的完整轮次
       const topLevelTurns = turns.filter((el) => {
         return !el.parentElement?.closest(
           'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]'
         );
       });
       const candidate = (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : turns[turns.length - 1]) ?? null;
-      if (candidate) {
-        // 二次核验：候选元素内不得包含任何代表用户角色的子元素
-        if (!candidate.querySelector('[class*="user"], [class*="query"], [class*="question"], [data-role="user"]')) {
-          return candidate;
-        }
+      if (candidate && !isUserTurnElement(candidate)) {
+        return candidate;
       }
     }
 
-    // 2. 降级：查找 qwen-markdown 容器，但必须显式过滤用户气泡！
+    // 2. 特征锚点定位：通过助手专属操作按钮（重新生成、复制回答、点赞）定位所属父级卡片
+    const assistantButtons = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[aria-label*="复制"], button[aria-label*="重新生成"], div[class*="operate-btn"]'
+      )
+    );
+    for (let i = assistantButtons.length - 1; i >= 0; i--) {
+      const btn = assistantButtons[i]!;
+      const parentCard = btn.closest<HTMLElement>(
+        'div[class*="chat-message"], div[class*="message-item"], div[class*="item"], div[class*="assistant"]'
+      );
+      if (parentCard && !isUserTurnElement(parentCard)) {
+        return parentCard;
+      }
+    }
+
+    // 3. 降级：查找 qwen-markdown 容器，但必须显式过滤用户气泡！
     const mdBodies = Array.from(
-      document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]')
+      document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"], div[class*="markdown"]')
     ).filter((el) => {
-      // 向上溯源：若祖先节点包含 user/query/question/prompt 则坚决排除！
-      const userAncestor = el.closest('[class*="user"], [class*="question"], [class*="query"], [data-role="user"], [class*="prompt"]');
-      if (userAncestor) return false;
-      const cls = (el.className || '').toString().toLowerCase();
-      return !cls.includes('user') && !cls.includes('question') && !cls.includes('query');
+      let parent = el.parentElement;
+      while (parent && parent !== document.body) {
+        if (isUserTurnElement(parent)) return false;
+        parent = parent.parentElement;
+      }
+      return true;
     });
 
     if (mdBodies.length > 0) {
-      return mdBodies[mdBodies.length - 1] ?? null;
+      const lastMd = mdBodies[mdBodies.length - 1]!;
+      const parentCard = lastMd.closest<HTMLElement>('div[class*="message"], div[class*="chat-item"], div[class*="item"]');
+      if (parentCard && !isUserTurnElement(parentCard)) {
+        return parentCard;
+      }
+      return lastMd;
     }
 
     return null;
