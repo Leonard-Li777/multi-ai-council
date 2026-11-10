@@ -216,13 +216,44 @@ export class WenxinAdapter implements AISiteAdapter {
           }
         }
 
-        let result = currentText;
-        try {
-          const md = domToMarkdown(lastMsgEl);
-          if (md && md.trim().length > 0) {
-            result = md;
+        // 核心：从轮次容器中聚合全部正文内容，杜绝仅截取首个子块
+        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+        clone
+          .querySelectorAll(
+            'div[class*="toolbar"], div[class*="tool-bar"], div[class*="footer"], div[class*="operate"], div[class*="action"], [role="toolbar"], button, div[class*="avatar"]'
+          )
+          .forEach((el) => el.remove());
+
+        // 查找所有顶层 markdown / 富文本容器
+        const mdContainers = Array.from(
+          clone.querySelectorAll<HTMLElement>(
+            'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+          )
+        ).filter((el) => {
+          return !el.parentElement?.closest(
+            'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
+          );
+        });
+
+        let result = '';
+        if (mdContainers.length > 0) {
+          result = mdContainers
+            .map((el) => {
+              const md = domToMarkdown(el);
+              return (md && md.trim().length > 0) ? md : (el.innerText || el.textContent || '').trim();
+            })
+            .filter((t) => t.trim().length > 0)
+            .join('\n\n');
+        }
+
+        // 兜底：若没有找到独立的子容器或提取过少，对净化后的整轮执行转换
+        if (result.trim().length < 50) {
+          const fullMd = domToMarkdown(clone);
+          const fullText = (fullMd && fullMd.trim().length > 0) ? fullMd : (clone.innerText || clone.textContent || '').trim();
+          if (fullText.length > result.length) {
+            result = fullText;
           }
-        } catch {}
+        }
 
         // 思考中过滤：若剥离思考后长度为 0，返回空以保持监听
         const { cleaned } = stripThinkBlocks(result);
@@ -231,8 +262,6 @@ export class WenxinAdapter implements AISiteAdapter {
         }
 
         // 核心防断崖式回退保护（Anti-Shrink Protection）：
-        // 若当前轮次已抓取了长正文（例如 1500+ 字），而当前帧因底部挂件、弹窗或临时节点漂移骤降为极短文本（如 2 字“表格”），
-        // 绝不采纳此脏快照，坚决返回历史最高有效长文本，彻底根除 1550 字突变为 2 字的早熟误判缺陷！
         if (this.currentSnapshot.length > 100 && result.length < this.currentSnapshot.length * 0.3) {
           return this.currentSnapshot;
         }
@@ -250,7 +279,7 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 3500,
+      silenceThresholdMs: 5000,
     });
 
     this.activeDetector.start(chatContainer);
@@ -273,17 +302,51 @@ export class WenxinAdapter implements AISiteAdapter {
     );
   }
 
-  private findSendButton(): HTMLElement | null {
-    const direct = document.querySelector<HTMLElement>(
-      'span[class*="sendBtn"], div[class*="sendBtn"], span[class*="send_btn"], div[class*="send_btn"], div[class*="send-btn"], span[class*="send-btn"], button[class*="send"], div[class*="enter-btn"], span[class*="submit"], div[class*="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"], div[class*="operate-btn"]'
-    );
-    if (direct) return direct;
+  private isStopActionElement(el: HTMLElement | null): boolean {
+    if (!el) return false;
+    const aria = (el.getAttribute('aria-label') || el.getAttribute('title') || '').toLowerCase();
+    if (aria.includes('停止') || aria.includes('stop') || aria.includes('pause') || aria.includes('取消生成') || aria.includes('停止响应')) {
+      return true;
+    }
+    const cls = (el.className || '').toString().toLowerCase();
+    if (cls.includes('stop') || cls.includes('pause') || cls.includes('loading')) {
+      return true;
+    }
+    // 检查是否包含方形停止图标（如 <rect> 或含 stop 特征的 SVG）
+    if (el.querySelector('rect, [class*="stop"], [class*="pause"], [class*="square"]')) {
+      return true;
+    }
+    return false;
+  }
 
+  private findSendButton(): HTMLElement | null {
     const input = this.findInputElement();
+    const container = input ? (input.closest('div[class*="input"], div[class*="chat-input"], div[class*="chat_input"], div[class*="sender"], form') as HTMLElement | null) : null;
+    const searchRoot = container || document;
+
+    const candidates = Array.from(
+      searchRoot.querySelectorAll<HTMLElement>(
+        'span[class*="sendBtn"], div[class*="sendBtn"], span[class*="send_btn"], div[class*="send_btn"], div[class*="send-btn"], span[class*="send-btn"], button[class*="send"], div[class*="enter-btn"], span[class*="submit"], div[class*="submit"], div[role="button"][aria-label*="发送"], button[aria-label*="发送"], div[class*="operate-btn"]'
+      )
+    );
+
+    // 严厉排除处于停止态（包含 rect、stop 语义）的按钮
+    const sendBtn = candidates.find((b) => {
+      if (this.isStopActionElement(b)) return false;
+      const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+      if (aria.includes('file') || aria.includes('upload') || aria.includes('plugin') || aria.includes('image')) {
+        return false;
+      }
+      return true;
+    });
+
+    if (sendBtn) return sendBtn;
+
     let parent = input?.parentElement;
     for (let i = 0; i < 6 && parent; i++) {
-      const candidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button'));
-      const candidate = candidates.reverse().find((b) => {
+      const parentCandidates = Array.from(parent.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button'));
+      const candidate = parentCandidates.reverse().find((b) => {
+        if (this.isStopActionElement(b)) return false;
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
         const cls = (b.className || '').toLowerCase();
         if (aria.includes('file') || aria.includes('upload') || aria.includes('plugin') || cls.includes('upload')) {
@@ -298,7 +361,18 @@ export class WenxinAdapter implements AISiteAdapter {
   }
 
   private findStopButton(): HTMLElement | null {
+    const input = this.findInputElement();
+    const container = input ? (input.closest('div[class*="input"], div[class*="chat-input"], div[class*="chat_input"], div[class*="sender"], form') as HTMLElement | null) : null;
+    const searchRoot = container || document;
+
+    // 1. 输入框容器内部查找 stop 元素
+    const candidates = Array.from(searchRoot.querySelectorAll<HTMLElement>('div[role="button"], span[role="button"], button, span, div'));
+    const found = candidates.find((b) => this.isStopActionElement(b));
+    if (found) return found;
+
+    // 2. 全局选择器兜底
     return (
+      searchRoot.querySelector<HTMLElement>('span[class*="stop"], button[class*="stop"], div[class*="stop"], div[class*="stop-btn"], div[class*="stopBtn"], button[aria-label*="停止"], div[role="button"][aria-label*="停止"], span[aria-label*="停止"]') ||
       document.querySelector<HTMLElement>('span[class*="stop"]') ||
       document.querySelector<HTMLElement>('button[class*="stop"]') ||
       document.querySelector<HTMLElement>('div[class*="stop"]') ||
@@ -421,9 +495,15 @@ export class WenxinAdapter implements AISiteAdapter {
     });
 
     if (turns.length > 0) {
+      // 过滤掉嵌套在同类候选内部的子卡片，保证获取到的是最外层的完整轮次
+      const topLevelTurns = turns.filter((el) => {
+        return !el.parentElement?.closest(turnSelectors.join(', '));
+      });
+      const validTurns = topLevelTurns.length > 0 ? topLevelTurns : turns;
+
       // 倒序遍历轮次，严格排除底部独立的插件卡片、表格浮层或操作栏
-      for (let i = turns.length - 1; i >= 0; i--) {
-        const turn = turns[i]!;
+      for (let i = validTurns.length - 1; i >= 0; i--) {
+        const turn = validTurns[i]!;
         const cls = (turn.className || '').toLowerCase();
         if (
           cls.includes('action') ||
@@ -435,16 +515,10 @@ export class WenxinAdapter implements AISiteAdapter {
         ) {
           continue;
         }
-        const contentEl = turn.querySelector<HTMLElement>(
-          'div[class*="eb-markdown"], div[class*="robot-content"], div[class*="md-view"], div[class*="markdown"], div[class*="rich-text"], div[class*="richText"], div[class*="textContent"], div[class*="text-content"], div[class*="answer-content"], div.markdown-body'
-        );
-        const text = ((contentEl || turn).innerText || (contentEl || turn).textContent || '').trim();
-        // 若该轮次有实质正文 (> 20字)，优先采纳
-        if (text.length > 20) {
-          return contentEl || turn;
-        }
+        // 核心修正：直接返回完整轮次容器 turn，由上层净化并聚合所有 markdown/文本子块，彻底杜绝单块 ISS-01 截断！
+        return turn;
       }
-      return turns[turns.length - 1]!;
+      return validTurns[validTurns.length - 1]!;
     }
 
     // 2. 降级：查询页面中所有非用户的 markdown / 富文本正文容器

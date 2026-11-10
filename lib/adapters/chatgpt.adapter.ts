@@ -139,8 +139,22 @@ export class ChatGPTAdapter implements AISiteAdapter {
     // 1. 轮询等待输入框真正挂载并就绪 (最多等待 8 秒)
     let input: HTMLElement | null = null;
     for (let i = 0; i < 40; i++) {
-      input = this.findInputElement();
-      if (input && input.isConnected) break;
+      const el = this.findInputElement();
+      if (el && el.isConnected) {
+        // 若命中了 ChatGPT 首页的 pending 占位 textarea，主动点击唤醒真实 ProseMirror 挂载
+        if (el.id === 'pending-home-input') {
+          el.focus();
+          el.click();
+          await this.sleep(300);
+          const real = document.querySelector<HTMLElement>('#prompt-textarea, div[contenteditable="true"]');
+          if (real) {
+            input = real;
+            break;
+          }
+        }
+        input = el;
+        break;
+      }
       await this.sleep(200);
     }
 
@@ -152,27 +166,35 @@ export class ChatGPTAdapter implements AISiteAdapter {
 
     flightRecorder.info('ChatGPT', 'INPUT_FOUND', { tag: input.tagName, id: input.id });
 
-    // 2. 模拟写入 ProseMirror 富文本 (支持直接更新 ProseMirror 内部 <p> 标签并派发全套事件)
+    // 2. 模拟写入 ProseMirror 富文本或标准 textarea
     input.focus();
     let injected = false;
     try {
       injected = await simulateTextInput(input, prompt);
     } catch {}
 
-    // 若富文本模拟写入未生效或为空，执行 ProseMirror DOM 树强力注入保底
-    const currentText = input.textContent || '';
-    if (!injected || currentText.trim().length === 0) {
-      let p = input.querySelector('p');
-      if (!p) {
-        p = document.createElement('p');
-        input.innerHTML = '';
-        input.appendChild(p);
+    // 若模拟写入未生效或为空，根据元素类型分别执行严格注入保底
+    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    if (!injected || currentVal.trim().length === 0) {
+      if (input instanceof HTMLTextAreaElement) {
+        input.value = prompt;
+        input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+      } else {
+        let p = input.querySelector('p');
+        if (!p) {
+          p = document.createElement('p');
+          input.innerHTML = '';
+          input.appendChild(p);
+        }
+        p.textContent = prompt;
+        input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       }
-      p.textContent = prompt;
-      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
-      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       injected = true;
       flightRecorder.info('ChatGPT', 'PROMPT_INJECT_FALLBACK_TREE', { promptLength: prompt.length });
     } else {
@@ -442,14 +464,23 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   private findInputElement(): HTMLElement | null {
-    return (
-      document.querySelector<HTMLElement>('#prompt-textarea') ||
-      document.querySelector<HTMLElement>('div[contenteditable="true"]#prompt-textarea') ||
-      document.querySelector<HTMLElement>('div[contenteditable="true"][data-placeholder]') ||
-      document.querySelector<HTMLElement>('textarea[data-id="root"]') ||
-      document.querySelector<HTMLElement>('div[contenteditable="true"]') ||
-      document.querySelector<HTMLElement>('textarea')
+    // 优先匹配正式的聊天输入框 #prompt-textarea
+    const promptTextarea = document.querySelector<HTMLElement>(
+      '#prompt-textarea, div[contenteditable="true"]#prompt-textarea, textarea#prompt-textarea'
     );
+    if (promptTextarea) return promptTextarea;
+
+    // 匹配通用 contenteditable 富文本输入框
+    const contentEditable = document.querySelector<HTMLElement>(
+      'div[contenteditable="true"][data-placeholder], div[contenteditable="true"].ProseMirror, div[contenteditable="true"]'
+    );
+    if (contentEditable) return contentEditable;
+
+    // 匹配首页 pending 占位符或 root textarea
+    const pendingInput = document.querySelector<HTMLElement>('#pending-home-input, textarea[data-id="root"]');
+    if (pendingInput) return pendingInput;
+
+    return document.querySelector<HTMLElement>('textarea:not([aria-hidden="true"])');
   }
 
   private findSendButton(): HTMLElement | null {

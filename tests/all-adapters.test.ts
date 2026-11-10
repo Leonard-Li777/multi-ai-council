@@ -109,4 +109,57 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
 
     stopListener();
   });
+
+  it('wenxinAdapter extracts all markdown/text segments without truncating to first child', () => {
+    document.body.innerHTML = `
+      <div class="chat-message assistant">
+        <div class="eb-markdown">
+          <h3>[ISS-01] voerkai18n 静态扫描存在漏词盲区</h3>
+          <p>关联方案锚点：PLAN-SEC-03</p>
+        </div>
+        <div class="eb-markdown">
+          <h3>[ISS-02] 缺少增量热更新回滚幂等性防护</h3>
+          <p>关联方案锚点：PLAN-SEC-08</p>
+        </div>
+      </div>
+    `;
+
+    wenxinAdapter.recordBaseline();
+
+    document.body.innerHTML += `
+      <div class="chat-message assistant">
+        <div class="eb-markdown">
+          <h3>[ISS-01] 第二轮问题一</h3>
+          <p>关联方案锚点：PLAN-SEC-03 详细审查内容</p>
+        </div>
+        <div class="eb-markdown">
+          <h3>[ISS-02] 第二轮问题二</h3>
+          <p>关联方案锚点：PLAN-SEC-08 关键缺失防护</p>
+        </div>
+      </div>
+    `;
+
+    const stopListener = wenxinAdapter.listenGeneration(
+      () => {},
+      () => {}
+    );
+
+    const detector = (wenxinAdapter as any).activeDetector;
+    const current = detector.options.getCurrentContent();
+    expect(current).toContain('第二轮问题一');
+    expect(current).toContain('第二轮问题二');
+    expect(current).toContain('关键缺失防护');
+
+    stopListener();
+  });
+
+  it('chatGPTAdapter prefers #prompt-textarea over #pending-home-input', () => {
+    document.body.innerHTML = `
+      <textarea id="pending-home-input"></textarea>
+      <div id="prompt-textarea" contenteditable="true"><p></p></div>
+    `;
+
+    const input = (chatGPTAdapter as any).findInputElement();
+    expect(input?.id).toBe('prompt-textarea');
+  });
 });
