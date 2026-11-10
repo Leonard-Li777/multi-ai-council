@@ -61,8 +61,10 @@ export async function saveActiveJob(job: ReviewJob): Promise<void> {
 
   // 2. 幂等落盘 IndexedDB
   try {
-    const db = await getDB();
-    await db.put('jobs', job);
+    if (typeof indexedDB !== 'undefined') {
+      const db = await getDB();
+      await db.put('jobs', job);
+    }
   } catch (err) {
     console.error('[JobStore] Failed to write to IndexedDB', err);
   }
@@ -86,15 +88,17 @@ export async function getActiveJob(): Promise<ReviewJob | null> {
 
   // 2. 从 IndexedDB 恢复最新活跃状态的 Job
   try {
-    const db = await getDB();
-    const all = await db.getAllFromIndex('jobs', 'by-date');
-    const active = all.reverse().find((j) => j.active);
-    if (active) {
-      // 恢复写回 session
-      if (typeof chrome !== 'undefined' && chrome.storage?.session) {
-        await chrome.storage.session.set({ [SESSION_ACTIVE_JOB_KEY]: active });
+    if (typeof indexedDB !== 'undefined') {
+      const db = await getDB();
+      const all = await db.getAllFromIndex('jobs', 'by-date');
+      const active = all.reverse().find((j) => j.active);
+      if (active) {
+        // 恢复写回 session
+        if (typeof chrome !== 'undefined' && chrome.storage?.session) {
+          await chrome.storage.session.set({ [SESSION_ACTIVE_JOB_KEY]: active });
+        }
+        return active;
       }
-      return active;
     }
   } catch (err) {
     console.error('[JobStore] Failed to read from IndexedDB', err);
@@ -118,10 +122,13 @@ export async function updateProviderRun(
     const job = await getActiveJob();
     if (!job || job.id !== jobId) {
       // 尝试从 IDB 读取指定 ID
-      const db = await getDB();
-      const storedJob = await db.get('jobs', jobId);
-      if (!storedJob) return null;
-      return updateRunInternal(storedJob, siteName, update);
+      if (typeof indexedDB !== 'undefined') {
+        const db = await getDB();
+        const storedJob = await db.get('jobs', jobId);
+        if (!storedJob) return null;
+        return updateRunInternal(storedJob, siteName, update);
+      }
+      return null;
     }
     return updateRunInternal(job, siteName, update);
   }).catch((err) => {
@@ -148,10 +155,17 @@ async function updateRunInternal(
 
   // 终态保护：一旦达到 DONE、CANCELED 或 TAB_CLOSED，忽略后续迟到的流式 STREAMING 状态覆写
   const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED' || currentRun.status === 'DONE';
-  const isReactivation =
-    update.status === 'PENDING' || update.status === 'OPENING_TAB' || update.status === 'WAITING_READY';
+  const isLateStream = update.status === 'STREAMING' || update.status === 'SENDING';
+  const isExplicitOverrideOrReactivation =
+    update.status === 'DONE' ||
+    update.status === 'PENDING' ||
+    update.status === 'OPENING_TAB' ||
+    update.status === 'WAITING_READY' ||
+    update.status === 'CANCELED';
 
-  const newStatus = isTerminal && !isReactivation ? currentRun.status : (update.status ?? currentRun.status);
+  const newStatus = isTerminal && isLateStream && !isExplicitOverrideOrReactivation
+    ? currentRun.status
+    : (update.status ?? currentRun.status);
 
   job.providerRuns[siteName] = {
     ...currentRun,
@@ -183,10 +197,17 @@ export async function batchUpdateProviderRuns(
       retryCount: 0,
     };
 
-    const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED';
-    const isReactivation =
-      update.status === 'PENDING' || update.status === 'OPENING_TAB' || update.status === 'WAITING_READY';
-    const newStatus = isTerminal && !isReactivation ? currentRun.status : (update.status ?? currentRun.status);
+    const isTerminal = currentRun.status === 'CANCELED' || currentRun.status === 'TAB_CLOSED' || currentRun.status === 'DONE';
+    const isLateStream = update.status === 'STREAMING' || update.status === 'SENDING';
+    const isExplicitOverrideOrReactivation =
+      update.status === 'DONE' ||
+      update.status === 'PENDING' ||
+      update.status === 'OPENING_TAB' ||
+      update.status === 'WAITING_READY' ||
+      update.status === 'CANCELED';
+    const newStatus = isTerminal && isLateStream && !isExplicitOverrideOrReactivation
+      ? currentRun.status
+      : (update.status ?? currentRun.status);
 
     targetJob.providerRuns[siteName] = {
       ...currentRun,

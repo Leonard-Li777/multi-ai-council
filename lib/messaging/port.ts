@@ -30,6 +30,14 @@ export type PortMessage =
   | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string } }
   | { type: 'TRIGGER_SYNTHESIS'; payload: { jobId: string } }
   | { type: 'EXTEND_TIMEOUT'; payload: { jobId: string; extraSeconds: number } }
+  | {
+      type: 'MANUAL_OVERRIDE_RESPONSE';
+      payload: {
+        jobId: string;
+        siteName: SupportedSite;
+        text: string;
+      };
+    }
 
   // Background -> Side Panel
   | { type: 'JOB_SYNC'; payload: { job: ReviewJob } }

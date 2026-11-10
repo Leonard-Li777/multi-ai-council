@@ -531,6 +531,27 @@ export default defineBackground(() => {
         broadcastJobSync(updated);
         await triggerSynthesis(activeJob.id);
       }
+    } else if (msg.type === 'MANUAL_OVERRIDE_RESPONSE') {
+      const { jobId, siteName, text } = msg.payload;
+      const activeJob = await getActiveJob();
+      if (activeJob && activeJob.id === jobId) {
+        flightRecorder.record(siteName, 'MANUAL_OVERRIDE_SAVED', {
+          length: text.length,
+          preview: text.slice(0, 100),
+          jobId,
+        }, 'INFO');
+        const updated = await updateProviderRun(jobId, siteName, {
+          responseSnapshot: text,
+          cleanedResponse: text,
+          status: 'DONE',
+          errorReason: undefined,
+          completedAt: Date.now(),
+        });
+        if (updated) {
+          broadcastJobSync(updated);
+          await checkAutoTriggerSynthesis(jobId);
+        }
+      }
     } else {
       // 转发处理来自 Content Script 的消息
       await handleContentScriptMessage(msg, port);

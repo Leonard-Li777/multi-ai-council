@@ -240,6 +240,42 @@ export const App: React.FC = () => {
     sendToBackground({ type: 'SKIP_SITE', payload: { siteName, jobId: activeJob?.id } });
   };
 
+  // 手动粘贴/纠偏站点完整回复
+  const handlePasteResponse = async (siteName: SupportedSite, text: string) => {
+    if (!activeJob) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // 1. 本地状态即时更新
+    const updatedJob: ReviewJob = {
+      ...activeJob,
+      updatedAt: Date.now(),
+      providerRuns: {
+        ...activeJob.providerRuns,
+        [siteName]: {
+          ...(activeJob.providerRuns[siteName] || {
+            siteName,
+            retryCount: 0,
+          }),
+          responseSnapshot: trimmed,
+          cleanedResponse: trimmed,
+          status: 'DONE',
+          errorReason: undefined,
+          completedAt: Date.now(),
+        },
+      },
+    };
+    setActiveJob(updatedJob);
+    await saveActiveJob(updatedJob);
+
+    // 2. 跨进程广播与通知 Background，同步触发 Quorum / 终审判定
+    const payload = { jobId: activeJob.id, siteName, text: trimmed };
+    if (portSendRef.current) {
+      portSendRef.current({ type: 'MANUAL_OVERRIDE_RESPONSE', payload });
+    }
+    await sendToBackground({ type: 'MANUAL_OVERRIDE_RESPONSE', payload });
+  };
+
   // Quorum 快速降级终审
   const handleFastForward = () => {
     if (activeJob) {
@@ -594,6 +630,7 @@ export const App: React.FC = () => {
                     onFocusTab={() => handleFocusTab(site)}
                     onRetry={() => handleRetry(site)}
                     onSkip={() => handleSkipSite(site)}
+                    onPasteResponse={(text) => handlePasteResponse(site, text)}
                   />
                 ))}
               </div>

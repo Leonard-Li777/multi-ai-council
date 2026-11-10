@@ -58,42 +58,85 @@ export class GeminiAdapter implements AISiteAdapter {
    * 检查页面当前是否已存在历史消息
    */
   public hasExistingMessages(): boolean {
+    // 1. 若当前 URL 不是根路径 /app，而是带有会话ID /app/<id> 或子路径，必然是已有会话
+    if (typeof window !== 'undefined' && window.location?.pathname) {
+      const path = window.location.pathname;
+      if (path.length > 5 && path.startsWith('/app/')) {
+        return true;
+      }
+    }
+    // 2. DOM 元素检测：包括 user-query, model-response, conversation-container 等
     const msgs = document.querySelectorAll(
-      'model-response, div[class*="model-response"], div[class*="response-container"], message-content'
+      'user-query, model-response, div[class*="user-query"], div[class*="model-response"], div[class*="response-container"], message-content, div[class*="query-content"], div[class*="conversation-container"], [data-test-id*="conversation"]'
     );
     return msgs.length > 0;
   }
 
   public async createNewChat(): Promise<void> {
-    // 关键优化：若当前页面本无历史消息，切勿重复点击 New Chat 避免触发 SPA 页面硬刷新自杀
+    // 关键优化：若当前页面本无历史消息且处于根路径，切勿重复点击 New Chat 避免触发 SPA 页面硬刷新自杀
     if (!this.hasExistingMessages()) {
       return;
     }
 
-    const allCandidates = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'button, div[role="button"], span[role="button"]'
-      )
+    // 1. 优先尝试专向选择器定位 Gemini "New Chat" 按钮 / 链接入口
+    let newChatBtn = document.querySelector<HTMLElement>(
+      'a[href="/app"], a[href="https://gemini.google.com/app"], [data-test-id="new-chat-button"], [data-testid="new-chat-button"], [data-test-id*="new-chat"], [data-testid*="new-chat"], side-nav-button[aria-label*="New chat" i], side-nav-button[aria-label*="新对话"], button[aria-label*="New chat" i], button[aria-label*="新对话"], button[aria-label*="新建对话"], button[aria-label*="发起新对话"]'
     );
-    const newChatBtn = allCandidates.find((el) => {
-      const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
-      if (isLogo) return false;
-      const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-      const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-      return (
-        text === 'new chat' ||
-        text === '新对话' ||
-        text === '新建对话' ||
-        aria === 'new chat' ||
-        aria === '新对话' ||
-        aria === '新建对话' ||
-        el.getAttribute('data-test-id')?.includes('new-chat')
+
+    // 2. 若专向选择器未命中，全量扫描 sidebar 及导航按钮候选
+    if (!newChatBtn) {
+      const allCandidates = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          'button, a, div[role="button"], span[role="button"], side-nav-button'
+        )
       );
+      newChatBtn = allCandidates.find((el) => {
+        const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
+        if (isLogo) return false;
+        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+        const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+        const title = (el.getAttribute('title') || '').trim().toLowerCase();
+        const testId = (el.getAttribute('data-test-id') || el.getAttribute('data-testid') || '').toLowerCase();
+        const tooltip = (el.getAttribute('mattooltip') || el.getAttribute('aria-description') || '').toLowerCase();
+
+        return (
+          testId.includes('new-chat') ||
+          aria.includes('new chat') ||
+          aria.includes('新对话') ||
+          aria.includes('新建对话') ||
+          aria.includes('发起新对话') ||
+          aria.includes('新聊天') ||
+          title.includes('new chat') ||
+          title.includes('新对话') ||
+          title.includes('新建对话') ||
+          tooltip.includes('new chat') ||
+          tooltip.includes('新对话') ||
+          text.includes('new chat') ||
+          text.includes('新对话') ||
+          text.includes('新建对话') ||
+          text.includes('发起新对话')
+        );
+      }) || null;
+    }
+
+    flightRecorder.info('Gemini', 'NEW_CHAT_TRIGGERED', {
+      buttonFound: !!newChatBtn,
+      tag: newChatBtn?.tagName,
+      prevUrl: typeof window !== 'undefined' ? window.location.href : '',
     });
 
     if (newChatBtn) {
+      newChatBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      newChatBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
       newChatBtn.click();
-      await this.sleep(400);
+      await this.sleep(500);
+    } else {
+      // 兜底降级：若未找到按钮且当前处于 /app/<id> 历史对话中，直接点击 /app 链接或更新路由
+      const appLink = document.querySelector<HTMLAnchorElement>('a[href="/app"], a[href="https://gemini.google.com/app"]');
+      if (appLink) {
+        appLink.click();
+        await this.sleep(500);
+      }
     }
   }
 
