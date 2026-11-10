@@ -630,6 +630,52 @@ export default defineBackground(() => {
   });
 
   let startingJobId: string | null = null;
+  const activeWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function scheduleJobWatchdog(jobId: string, timeoutMs = 15 * 60 * 1000) {
+    if (activeWatchdogs.has(jobId)) {
+      clearTimeout(activeWatchdogs.get(jobId)!);
+      activeWatchdogs.delete(jobId);
+    }
+
+    const timer = setTimeout(async () => {
+      activeWatchdogs.delete(jobId);
+      const curJob = await getActiveJob();
+      if (!curJob || curJob.id !== jobId) return;
+
+      let changed = false;
+      for (const siteName of curJob.aggregationPolicy.enabledSites) {
+        const run = curJob.providerRuns[siteName];
+        if (
+          run &&
+          (run.status === 'PENDING' ||
+            run.status === 'WAITING_READY' ||
+            run.status === 'SENDING' ||
+            run.status === 'STREAMING')
+        ) {
+          console.warn(`[Background] Watchdog: Site ${siteName} timed out after 15m in state ${run.status}`);
+          flightRecorder.warn(siteName, 'JOB_WATCHDOG_TIMEOUT', { jobId, status: run.status });
+          await updateProviderRun(jobId, siteName, {
+            status: 'TIMEOUT',
+            errorReason: `${siteName} 运行超过 15 分钟全局安全阈值，触发硬超时熔断`,
+            completedAt: Date.now(),
+          });
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        const updated = await getActiveJob();
+        if (updated) {
+          broadcastJobSync(updated);
+        }
+        await checkAutoTriggerSynthesis(jobId);
+      }
+    }, timeoutMs);
+
+    activeWatchdogs.set(jobId, timer);
+  }
+
   async function handleStartJob(job: ReviewJob) {
     if (startingJobId === job.id) {
       console.log(`[Background] handleStartJob already running for job ${job.id}, skipping duplicate dispatch`);
@@ -645,6 +691,9 @@ export default defineBackground(() => {
     });
     await saveActiveJob(job);
     broadcastJobSync(job);
+
+    // 注入 Job 级全局 Watchdog（15分钟硬超时兜底，杜绝站点悬空挂死整个 Council 任务）
+    scheduleJobWatchdog(job.id);
 
     try {
       // 针对启用的所有站点并发错峰调度（单站独立超时保护，绝不让个别站点卡死其余站点）
@@ -908,9 +957,15 @@ export default defineBackground(() => {
   async function checkAutoTriggerSynthesis(jobId: string) {
     const job = await getActiveJob();
     if (!job || job.id !== jobId) return;
-    if (job.synthesisRun && job.synthesisRun.status !== 'PENDING') return;
 
     const quorum = calculateQuorumProgress(job);
+    if (quorum.isAllSettled && activeWatchdogs.has(jobId)) {
+      clearTimeout(activeWatchdogs.get(jobId)!);
+      activeWatchdogs.delete(jobId);
+    }
+
+    if (job.synthesisRun && job.synthesisRun.status !== 'PENDING') return;
+
     if (quorum.isAllSettled && quorum.completedCount >= quorum.minRequired) {
       await triggerSynthesis(job.id);
     }

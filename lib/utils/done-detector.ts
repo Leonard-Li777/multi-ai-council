@@ -14,6 +14,7 @@ export interface DoneDetectorOptions {
   onDone: (finalContent: string) => void;
   onUpdate: (currentContent: string) => void;
   silenceThresholdMs?: number;
+  userPrompt?: string; // 可选传入用户发送的原始提示词，用于提示词回显与角色污染防伪拦截
 }
 
 export class QuadSignalDoneDetector {
@@ -150,6 +151,15 @@ export class QuadSignalDoneDetector {
 
     // 若还没产生任何内容，等待
     if (currentLen === 0) return;
+
+    // 核心防提示词回显与角色污染门禁：严禁将用户输入的 Prompt 误采为回答
+    if (isPromptEcho(content, this.options.userPrompt)) {
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      return;
+    }
 
     // 思考保护：如果当前内容仅仅是“正在思考”、“思考中”等占位词，绝不能判定完成
     if (isThinkingOnly(content)) {
@@ -296,4 +306,27 @@ function isThinkingOnly(text: string): boolean {
     (t.startsWith('thinking') && t.length <= 25) ||
     (t.includes('思考') && t.length <= 15)
   );
+}
+
+export function isPromptEcho(content: string, userPrompt?: string): boolean {
+  if (!userPrompt || userPrompt.trim().length < 30) return false;
+  const pTrim = userPrompt.trim();
+  const cTrim = content.trim();
+  if (!cTrim) return false;
+
+  // 1. 前缀完全重合判定（提取前 60 字符对比）
+  const lead = pTrim.slice(0, 60);
+  if (cTrim.startsWith(lead)) return true;
+
+  // 2. 独有特征标签判定（如包含提示词特有标签且未包含闭合标签）
+  if (pTrim.includes('<review_mandate>') && cTrim.includes('<review_mandate>') && !cTrim.includes('</review_mandate>')) {
+    return true;
+  }
+
+  // 3. 长度相似且前 40 字符相同
+  if (Math.abs(cTrim.length - pTrim.length) < 100 && cTrim.slice(0, 40) === pTrim.slice(0, 40)) {
+    return true;
+  }
+
+  return false;
 }

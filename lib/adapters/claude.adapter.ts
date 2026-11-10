@@ -16,6 +16,7 @@ export class ClaudeAdapter implements AISiteAdapter {
   private currentSnapshot = '';
   private baselineLastElement: HTMLElement | null = null;
   private baselineLastContent = '';
+  private lastPrompt = '';
 
   public recordBaseline(): void {
     const el = this.findLatestAssistantMessageElement();
@@ -110,6 +111,7 @@ export class ClaudeAdapter implements AISiteAdapter {
    */
   public async sendPrompt(prompt: string): Promise<boolean> {
     this.recordBaseline();
+    this.lastPrompt = prompt;
 
     const input = this.findInputElement();
     if (!input) {
@@ -207,8 +209,39 @@ export class ClaudeAdapter implements AISiteAdapter {
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        // DOM 克隆净化：彻底剔除进度指示器、运行状态面板、思考临时条与各类操作按钮
+        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+        clone
+          .querySelectorAll(
+            'button, [role="toolbar"], div[class*="toolbar"], div[class*="footer"], div[class*="header"], [class*="progress"], [class*="status"], [class*="running"], [data-testid*="artifact"], div[class*="thinking"]'
+          )
+          .forEach((el) => {
+            el.remove();
+          });
+
+        // 深度递归清除包含“运行中”、“已运行”等瞬时进度特征的浮动卡片节点
+        const allNodes = Array.from(clone.querySelectorAll<HTMLElement>('div, span, p'));
+        for (const node of allNodes) {
+          const text = (node.innerText || node.textContent || '').trim();
+          if (
+            (text.includes('运行中') || text.includes('已运行') || /^\d+分钟\s*\d*秒?运行中/.test(text)) &&
+            node.children.length === 0
+          ) {
+            node.remove();
+          }
+        }
+
+        const md = domToMarkdown(clone);
+        const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
+
+        // 核心防角色污染门禁：严禁将用户输入的 Prompt 误采为助手回答
+        if (this.lastPrompt.trim().length > 30) {
+          const lead = this.lastPrompt.trim().slice(0, 60);
+          if (result.trim().startsWith(lead)) {
+            return '';
+          }
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -221,6 +254,7 @@ export class ClaudeAdapter implements AISiteAdapter {
         onDone(cleaned);
       },
       silenceThresholdMs: 5000,
+      userPrompt: this.lastPrompt,
     });
 
     this.activeDetector.start(chatContainer);

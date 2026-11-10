@@ -18,6 +18,7 @@ export class QwenAdapter implements AISiteAdapter {
   private highWaterMarkSnapshot = '';
   private baselineLastElement: HTMLElement | null = null;
   private baselineLastContent = '';
+  private lastPrompt = '';
 
   public recordBaseline(): void {
     const el = this.findLatestAssistantMessageElement();
@@ -194,6 +195,7 @@ export class QwenAdapter implements AISiteAdapter {
 
   public async sendPrompt(prompt: string): Promise<boolean> {
     this.recordBaseline();
+    this.lastPrompt = prompt;
 
     const input = this.findInputElement();
     if (!input) {
@@ -342,6 +344,21 @@ export class QwenAdapter implements AISiteAdapter {
           return '';
         }
 
+        // 核心防角色污染门禁：严禁将用户输入的 Prompt 误采为助手回答！
+        if (this.lastPrompt.trim().length > 30) {
+          const pTrim = this.lastPrompt.trim();
+          const cTrim = cleaned.trim();
+          const lead = pTrim.slice(0, 60);
+          if (cTrim.startsWith(lead)) {
+            flightRecorder.warn('Qwen', 'PROMPT_ECHO_REJECTED', { leadLen: lead.length });
+            return '';
+          }
+          if (pTrim.includes('<review_mandate>') && cTrim.includes('<review_mandate>') && !cTrim.includes('</review_mandate>')) {
+            flightRecorder.warn('Qwen', 'PROMPT_ECHO_TAG_DETECTED_REJECTED');
+            return '';
+          }
+        }
+
         // Anti-Shrink 高水位快照单调保护：杜绝流式期间 DOM 偶发抖动导致字数逆向回缩
         if (cleaned.length < this.highWaterMarkSnapshot.length * 0.7) {
           return this.highWaterMarkSnapshot;
@@ -362,6 +379,7 @@ export class QwenAdapter implements AISiteAdapter {
         onDone(cleaned);
       },
       silenceThresholdMs: 5000,
+      userPrompt: this.lastPrompt,
     });
 
     this.activeDetector.start(chatContainer);
@@ -562,15 +580,22 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框与编辑器容器）
+    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框、编辑器容器与任何用户卡片）
     const turns = Array.from(
       document.querySelectorAll<HTMLElement>(
         'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="user"]):not([class*="input"]):not([class*="fixed"]):not([class*="bottom"]):not([class*="editor"]):not([class*="textarea"])'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      // 坚决排除任何包含 input、fixed、editor 的输入卡片
-      return !cls.includes('input') && !cls.includes('fixed') && !cls.includes('editor');
+      // 坚决排除任何包含 input、fixed、editor、user、query、question 的卡片
+      return (
+        !cls.includes('input') &&
+        !cls.includes('fixed') &&
+        !cls.includes('editor') &&
+        !cls.includes('user') &&
+        !cls.includes('query') &&
+        !cls.includes('question')
+      );
     });
 
     if (turns.length > 0) {
@@ -580,11 +605,26 @@ export class QwenAdapter implements AISiteAdapter {
           'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]'
         );
       });
-      return (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : turns[turns.length - 1]) ?? null;
+      const candidate = (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : turns[turns.length - 1]) ?? null;
+      if (candidate) {
+        // 二次核验：候选元素内不得包含任何代表用户角色的子元素
+        if (!candidate.querySelector('[class*="user"], [class*="query"], [class*="question"], [data-role="user"]')) {
+          return candidate;
+        }
+      }
     }
 
-    // 2. 降级：查找全量 qwen-markdown 容器中的最后一个
-    const mdBodies = Array.from(document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]'));
+    // 2. 降级：查找 qwen-markdown 容器，但必须显式过滤用户气泡！
+    const mdBodies = Array.from(
+      document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"]')
+    ).filter((el) => {
+      // 向上溯源：若祖先节点包含 user/query/question/prompt 则坚决排除！
+      const userAncestor = el.closest('[class*="user"], [class*="question"], [class*="query"], [data-role="user"], [class*="prompt"]');
+      if (userAncestor) return false;
+      const cls = (el.className || '').toString().toLowerCase();
+      return !cls.includes('user') && !cls.includes('question') && !cls.includes('query');
+    });
+
     if (mdBodies.length > 0) {
       return mdBodies[mdBodies.length - 1] ?? null;
     }

@@ -241,5 +241,44 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
 
       detector.destroy();
     });
+
+    it('rejects prompt echo and prevents premature done when captured content echoes user prompt', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+
+      const stopBtn = document.createElement('button');
+      stopBtn.disabled = true;
+      document.body.appendChild(stopBtn);
+
+      const sendBtn = document.createElement('button');
+      sendBtn.disabled = false;
+      document.body.appendChild(sendBtn);
+
+      const userPrompt = '# 桌面端全流程自动化测试规格书外部专家红队盲审提示词 (External Review Prompt)\n\n<review_mandate>你是一名顶级专家，请全面穷尽推演并发漏洞与边界缺陷。</review_mandate>';
+      // 模拟误采到用户提示词
+      const echoedContent = userPrompt;
+
+      const onDone = vi.fn();
+      const detector = new QuadSignalDoneDetector({
+        getStopButton: () => stopBtn,
+        getSendButton: () => sendBtn,
+        getCurrentContent: () => echoedContent,
+        onDone,
+        onUpdate: vi.fn(),
+        silenceThresholdMs: 2000,
+        userPrompt,
+      });
+
+      detector.start(container);
+
+      // 无论静默多久，提示词回显坚决不触发完成！
+      vi.advanceTimersByTime(5000);
+      expect(onDone).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(30000);
+      expect(onDone).not.toHaveBeenCalled();
+
+      detector.destroy();
+    });
   });
 });
