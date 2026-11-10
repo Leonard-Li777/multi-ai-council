@@ -88,9 +88,9 @@ export class ChatGPTAdapter implements AISiteAdapter {
   /**
    * 开启新会话
    */
-  public async createNewChat(): Promise<void> {
-    // 若当前已经是根路径，本身即为全新会话，无需触发导航
-    if (window.location.pathname === '/' || window.location.pathname === '') {
+  public async createNewChat(force = false): Promise<void> {
+    // 若当前已经是根路径且非强制唤醒，本身即为全新会话，无需触发导航
+    if (!force && (window.location.pathname === '/' || window.location.pathname === '')) {
       return;
     }
 
@@ -136,25 +136,31 @@ export class ChatGPTAdapter implements AISiteAdapter {
   public async sendPrompt(prompt: string): Promise<boolean> {
     this.recordBaseline();
 
-    // 1. 轮询等待输入框真正挂载并就绪 (最多等待 8 秒)
+    // 1. 轮询等待真实可交互输入框就绪 (最多等待 15 秒)
+    // 严禁将 SSR 阶段的 #pending-home-input 占位符当作最终就绪输入框
     let input: HTMLElement | null = null;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 75; i++) {
       const el = this.findInputElement();
       if (el && el.isConnected) {
-        // 若命中了 ChatGPT 首页的 pending 占位 textarea，主动点击唤醒真实 ProseMirror 挂载
-        if (el.id === 'pending-home-input') {
-          el.focus();
-          el.click();
-          await this.sleep(300);
-          const real = document.querySelector<HTMLElement>('#prompt-textarea, div[contenteditable="true"]');
-          if (real) {
-            input = real;
-            break;
-          }
-        }
         input = el;
         break;
       }
+
+      // 若命中了 ChatGPT 首页的 pending 占位 textarea，主动点击唤醒真实 ProseMirror 挂载
+      const pending = document.querySelector<HTMLElement>('#pending-home-input, textarea[data-id="root"]');
+      if (pending) {
+        pending.focus();
+        pending.click();
+        pending.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        pending.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        pending.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+
+      // 每隔 2 秒尝试触发一次创建新会话以强制唤醒聊天主视窗
+      if (i > 0 && i % 10 === 0) {
+        await this.createNewChat(true);
+      }
+
       await this.sleep(200);
     }
 
@@ -274,7 +280,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 验证消息是否提交成功
    */
   public async validateSubmission(): Promise<boolean> {
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 10; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) {
@@ -282,10 +288,24 @@ export class ChatGPTAdapter implements AISiteAdapter {
         return true;
       }
 
+      // 检查是否已经产生新的回答容器
+      const lastMsg = this.findLatestAssistantMessageElement();
+      if (lastMsg && lastMsg !== this.baselineLastElement) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'NEW_ASSISTANT_MESSAGE_DETECTED' });
+        return true;
+      }
+
+      // 检查 URL 是否发生改变（例如从 / 变为 /c/<uuid>）
+      if (window.location.pathname.startsWith('/c/')) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'CONVERSATION_URL_CREATED' });
+        return true;
+      }
+
       const input = this.findInputElement();
       if (input) {
         const val = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
-        if (val.trim().length === 0) {
+        // 只有当至少经历了两轮轮询 (i >= 2) 且输入框被清空时才视为提交完成
+        if (val.trim().length === 0 && i >= 2) {
           flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
           return true;
         }
@@ -298,13 +318,23 @@ export class ChatGPTAdapter implements AISiteAdapter {
           sendBtn.click();
         }
         input.focus();
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };
+        input.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+        input.dispatchEvent(new KeyboardEvent('keypress', eventInit));
+        input.dispatchEvent(new KeyboardEvent('keyup', eventInit));
       }
     }
 
     // 最终检查：若依然有 stop 按钮则判定成功
     if (this.findStopButton()) {
       flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_STOP_BUTTON_DETECTED' });
+      return true;
+    }
+
+    // 检查是否有新的回答容器
+    const finalLastMsg = this.findLatestAssistantMessageElement();
+    if (finalLastMsg && finalLastMsg !== this.baselineLastElement) {
+      flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_NEW_ASSISTANT_MESSAGE_DETECTED' });
       return true;
     }
 
@@ -463,24 +493,30 @@ export class ChatGPTAdapter implements AISiteAdapter {
     return 'FAILED';
   }
 
-  private findInputElement(): HTMLElement | null {
-    // 优先匹配正式的聊天输入框 #prompt-textarea
+  public findInputElement(): HTMLElement | null {
+    // 1. 优先匹配正式的聊天输入框 #prompt-textarea
     const promptTextarea = document.querySelector<HTMLElement>(
       '#prompt-textarea, div[contenteditable="true"]#prompt-textarea, textarea#prompt-textarea'
     );
     if (promptTextarea) return promptTextarea;
 
-    // 匹配通用 contenteditable 富文本输入框
+    // 2. 匹配通用 contenteditable 富文本输入框 (ProseMirror)
     const contentEditable = document.querySelector<HTMLElement>(
       'div[contenteditable="true"][data-placeholder], div[contenteditable="true"].ProseMirror, div[contenteditable="true"]'
     );
     if (contentEditable) return contentEditable;
 
-    // 匹配首页 pending 占位符或 root textarea
-    const pendingInput = document.querySelector<HTMLElement>('#pending-home-input, textarea[data-id="root"]');
-    if (pendingInput) return pendingInput;
+    // 3. 匹配非 pending 占位符的有效 textarea（严禁将 SSR 阶段的 #pending-home-input 当作已就绪输入框）
+    const nonPendingTextareas = Array.from(
+      document.querySelectorAll<HTMLTextAreaElement>('textarea:not([aria-hidden="true"])')
+    ).filter(
+      (el) => el.id !== 'pending-home-input' && el.getAttribute('data-id') !== 'root'
+    );
+    if (nonPendingTextareas.length > 0 && nonPendingTextareas[0]) {
+      return nonPendingTextareas[0];
+    }
 
-    return document.querySelector<HTMLElement>('textarea:not([aria-hidden="true"])');
+    return null;
   }
 
   private findSendButton(): HTMLElement | null {

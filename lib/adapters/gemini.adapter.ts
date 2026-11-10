@@ -389,26 +389,23 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findStopButton(): HTMLElement | null {
-    // 优先在输入区域内查找停止按钮，避免全网页范围误命中非生成相关的静态按钮
+    // 1. 优先在输入区域内查找停止按钮，避免全网页范围误命中非生成相关的静态按钮
     const input = this.findInputElement();
     const container = input ? (input.closest('rich-textarea, div[class*="input-area"], div[class*="text-input"], form') as HTMLElement | null) : null;
-    const searchRoot = container || document;
+    if (container) {
+      const stopCandidate = container.querySelector<HTMLElement>(
+        'button[aria-label*="Stop response"], button[aria-label*="停止回答"], button[aria-label*="Stop generating"], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
+      );
+      if (stopCandidate) return stopCandidate;
+    }
 
-    const stopCandidate = searchRoot.querySelector<HTMLElement>(
+    // 2. 在 document 范围内仅精确匹配生成特有的停止响应按钮（严禁匹配宽泛的 Stop/停止，杜绝误命中 TTS 朗读与播放控制）
+    const stopDocCandidate = document.querySelector<HTMLElement>(
       'button[aria-label*="Stop response"], button[aria-label*="停止回答"], button[aria-label*="Stop generating"], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
     );
-    if (stopCandidate) return stopCandidate;
+    if (stopDocCandidate) return stopDocCandidate;
 
-    // 兜底：若在输入容器内没找到，仅在紧邻区域查找通用 Stop 按钮（必须排除朗读/TTS/音频相关）
-    const generalCandidates = Array.from(
-      searchRoot.querySelectorAll<HTMLElement>(
-        'button[aria-label*="Stop"], button[aria-label*="停止"], div[role="button"][aria-label*="Stop"], div[role="button"][aria-label*="停止"]'
-      )
-    );
-    return generalCandidates.find((el) => {
-      const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-      return !aria.includes('listen') && !aria.includes('audio') && !aria.includes('speech') && !aria.includes('朗读');
-    }) || null;
+    return null;
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {

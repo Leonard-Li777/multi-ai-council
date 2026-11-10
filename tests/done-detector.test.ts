@@ -199,5 +199,47 @@ describe('QuadSignalDoneDetector & isElementActiveAndVisible', () => {
 
       detector.destroy();
     });
+
+    it('triggers HARD_SILENCE_FORCE_DONE for long text (>100 chars) when stop button is stuck active but text remains silent for 8s', async () => {
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+
+      // 模拟幽灵停止按钮（如 Gemini 页面残留或未销毁的 TTS/控制按钮）
+      const phantomStopBtn = document.createElement('button');
+      phantomStopBtn.setAttribute('aria-label', 'Stop response');
+      phantomStopBtn.disabled = false;
+      document.body.appendChild(phantomStopBtn);
+
+      const sendBtn = document.createElement('button');
+      sendBtn.setAttribute('aria-label', 'Send message');
+      sendBtn.setAttribute('aria-disabled', 'true'); // 输入框为空，发送按钮不可用
+      document.body.appendChild(sendBtn);
+
+      const longContent = '## 规格说明书审查评估报告\n\n经深度通盘推演与全量代码事实核验，当前多模型协同插件已实现双轨网络与DOM伴生流式收敛。全量接口签名与数据拓扑均已核验无误，具备极高的鲁棒性与工业级容灾能力，完全符合交付标准并具备极佳的代码可维护性。';
+      expect(longContent.length).toBeGreaterThan(100);
+
+      const onDone = vi.fn();
+      const detector = new QuadSignalDoneDetector({
+        getStopButton: () => phantomStopBtn,
+        getSendButton: () => sendBtn,
+        getCurrentContent: () => longContent,
+        onDone,
+        onUpdate: vi.fn(),
+        silenceThresholdMs: 2000,
+      });
+
+      detector.start(container);
+
+      // 前进 5 秒：虽然大于 silenceThresholdMs(2000)，但因停止按钮激活，尚未达到 8 秒硬超时
+      vi.advanceTimersByTime(5000);
+      expect(onDone).not.toHaveBeenCalled();
+
+      // 前进到 8.5 秒：硬静默防死锁门禁触发，强制解除死锁终审！
+      vi.advanceTimersByTime(3500);
+      expect(onDone).toHaveBeenCalledTimes(1);
+      expect(onDone).toHaveBeenCalledWith(longContent);
+
+      detector.destroy();
+    });
   });
 });

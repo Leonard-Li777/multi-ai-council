@@ -27,6 +27,7 @@ export class QuadSignalDoneDetector {
   private hasEverGenerated = false;
   private initialContentLength = 0;
   private startTime = Date.now();
+  private lastContentUpdateTime = Date.now();
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
@@ -39,6 +40,7 @@ export class QuadSignalDoneDetector {
     this.isCompleted = false;
     this.hasEverGenerated = false;
     this.startTime = Date.now();
+    this.lastContentUpdateTime = Date.now();
     const initial = this.options.getCurrentContent().trim();
     this.initialContentLength = initial.length;
     this.lastContentLength = this.initialContentLength;
@@ -63,6 +65,8 @@ export class QuadSignalDoneDetector {
 
       // 仅在正文长度发生变化时才触发 onUpdate，杜绝 500ms 轮询冗余刷屏
       if (currentLen !== this.lastContentLength) {
+        this.lastContentLength = currentLen;
+        this.lastContentUpdateTime = Date.now();
         if (currentLen > 0) {
           this.options.onUpdate(current);
         }
@@ -82,6 +86,8 @@ export class QuadSignalDoneDetector {
     // 关键防抖与防打断：只有当正文文本发生实质变化时，才通知更新并重置静默定时器
     // 杜绝光标闪烁、CSS 动画微动不断打断 silenceTimer 导致永远无法收敛为 DONE
     if (currentLen !== this.lastContentLength) {
+      this.lastContentLength = currentLen;
+      this.lastContentUpdateTime = Date.now();
       if (currentLen > 0) {
         this.options.onUpdate(current);
       }
@@ -105,22 +111,41 @@ export class QuadSignalDoneDetector {
     // 只有当发送按钮明确处于激活就绪状态，且发送按钮与停止按钮并非同一 DOM 实体时，才视为可能生成结束
     const isGenerating = isStopActive && !(sendBtn && sendBtn !== stopBtn && isSendActive);
 
-    // 关键状态记录：一旦看见处于激活态的停止按钮，确立进入过生成态
-    if (isGenerating) {
-      this.hasEverGenerated = true;
-      if (this.silenceTimer) {
-        window.clearTimeout(this.silenceTimer);
-        this.silenceTimer = null;
-      }
-      return;
-    }
-
     const content = this.options.getCurrentContent();
     const currentLen = content.trim().length;
 
     // 确认生成增长：若内容相比启动初始增加了 50 字符以上，确立进入过生成态
     if (currentLen - this.initialContentLength >= 50) {
       this.hasEverGenerated = true;
+    }
+
+    // 关键状态记录：一旦看见处于激活态的停止按钮，确立进入过生成态
+    if (isGenerating) {
+      this.hasEverGenerated = true;
+
+      // 核心防死锁机制 (Hard Silence Override)：
+      // 若正文已产生一定规模 (>100字且非纯思考词)，且整整 8 秒以上 DOM 字符未变动一个字节，
+      // 说明实际生成早已结束，残存的 Stop 按钮仅为未卸载的幽灵节点或非生成控制元素，强制解除死锁触发终审！
+      const silentDurationMs = Date.now() - this.lastContentUpdateTime;
+      if (
+        this.hasEverGenerated &&
+        currentLen >= 100 &&
+        !isThinkingOnly(content) &&
+        silentDurationMs >= 8000
+      ) {
+        flightRecorder.warn('System', 'HARD_SILENCE_FORCE_DONE', {
+          finalLen: currentLen,
+          silentDurationMs,
+        });
+        this.markDone(content);
+        return;
+      }
+
+      if (this.silenceTimer) {
+        window.clearTimeout(this.silenceTimer);
+        this.silenceTimer = null;
+      }
+      return;
     }
 
     // 若还没产生任何内容，等待
@@ -160,12 +185,13 @@ export class QuadSignalDoneDetector {
         const latestSend = this.options.getSendButton();
         const stillGenerating = isElementActiveAndVisible(latestStop) && !(latestSend && latestSend !== latestStop && isElementActiveAndVisible(latestSend));
 
-        // 再次确认内容长度稳定、非思考占位词、且不再处于生成中
+        // 再次确认内容长度稳定、非思考占位词、且不再处于生成中（或已触发长文本绝对静默保底）
+        const isHardSilent = latestContent.length >= 100 && (Date.now() - this.lastContentUpdateTime >= 8000);
         if (
           !this.isCompleted &&
           latestContent.trim().length === this.lastContentLength &&
           !isThinkingOnly(latestContent) &&
-          !stillGenerating
+          (!stillGenerating || isHardSilent)
         ) {
           // 双重确认：极短内容 (<60字) 严禁在 30 秒内触发完成
           if (latestContent.trim().length < 60 && Date.now() - this.startTime < 30000) {
