@@ -136,11 +136,19 @@ export class QwenAdapter implements AISiteAdapter {
   }
 
   /**
-   * 自动切换模型至 Qwen 3.8 Max (或指定模型名称)
+   * 自动切换模型至 Qwen4-Max-Preview (或指定模型名称)
    */
-  public async switchModel(targetModel = '3.8-Max'): Promise<boolean> {
+  public async switchModel(targetModel = 'Qwen4-Max-Preview'): Promise<boolean> {
     try {
-      const normalizedTarget = targetModel.toLowerCase().replace(/[\s\-_]/g, '');
+      const normalize = (s: string) => s.toLowerCase().replace(/[\s\-_]/g, '');
+      const normalizedTarget = normalize(targetModel);
+      const targetWithoutQwen = normalizedTarget.replace(/^qwen/, '');
+
+      const matchesExactTarget = (normText: string): boolean => {
+        if (normText.includes(normalizedTarget)) return true;
+        if (targetWithoutQwen.length >= 4 && normText.includes(targetWithoutQwen)) return true;
+        return false;
+      };
 
       // 1. 查找模型下拉触发器
       const triggers = Array.from(
@@ -150,8 +158,16 @@ export class QwenAdapter implements AISiteAdapter {
       );
 
       let trigger = triggers.find((t) => {
-        const text = (t.innerText || t.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-        return text.includes('qwen') || text.includes('max') || text.includes('3.8');
+        if (t.closest('form, div[class*="input"], div[class*="message"], article')) return false;
+        const text = normalize(t.innerText || t.textContent || '');
+        return (
+          text.includes('qwen') ||
+          text.includes('max') ||
+          text.includes('plus') ||
+          text.includes('turbo') ||
+          text.includes('preview') ||
+          text.includes('3.8')
+        );
       });
 
       if (!trigger) {
@@ -163,14 +179,10 @@ export class QwenAdapter implements AISiteAdapter {
       }
 
       if (trigger) {
-        const currentText = (trigger.innerText || trigger.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-        // 若当前已经包含 max 或 3.8 或目标型号，说明已经是所需模型，绝不重新点击展开下拉框扰乱焦点或打断用户手动选择
-        if (
-          currentText.includes(normalizedTarget) ||
-          currentText.includes('max') ||
-          currentText.includes('3.8')
-        ) {
-          console.log('[QwenAdapter] Already on target/Max model:', currentText);
+        const currentText = normalize(trigger.innerText || trigger.textContent || '');
+        // 仅当当前已经是精确目标模型（如 Qwen4-Max-Preview）时跳过展开，防止从旧版 Max（如 3.8-Max）升级时被误判跳过
+        if (matchesExactTarget(currentText)) {
+          console.log('[QwenAdapter] Already on target model:', currentText);
           return true;
         }
 
@@ -178,28 +190,45 @@ export class QwenAdapter implements AISiteAdapter {
         trigger.click();
         await this.sleep(600);
 
-        // 在弹出的下拉浮层中寻找匹配项
+        // 在弹出的下拉浮层中寻找匹配项，过滤掉包含多项文案的外层容器，优先精确命中最小可点击条目
         const options = Array.from(
           document.querySelectorAll<HTMLElement>(
-            'div[class*="dropdown"] *, div[class*="popover"] *, div[role="option"], div[role="menuitem"], div[class*="select-item"], div[class*="model-item"], div[class*="menu-item"]'
+            'div[class*="dropdown"] *, div[class*="popover"] *, div[role="option"], div[role="menuitem"], li[role="option"], li[role="menuitem"], div[class*="select-item"], div[class*="model-item"], div[class*="menu-item"]'
           )
         );
 
-        let match = options.find((el) => {
-          const t = (el.innerText || el.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-          return t.includes('3.8') && t.includes('max');
-        });
+        const pickBestOption = (predicate: (normText: string) => boolean): HTMLElement | undefined => {
+          const matched = options.filter((el) => predicate(normalize(el.innerText || el.textContent || '')));
+          if (matched.length === 0) return undefined;
+          // 优先选择文本最紧凑（非外层列表容器）的叶子或条目节点
+          const sorted = matched.sort(
+            (a, b) => (a.innerText || a.textContent || '').length - (b.innerText || b.textContent || '').length
+          );
+          const best = sorted[0]!;
+          return best.closest<HTMLElement>('[role="option"], [role="menuitem"], [class*="item"], li, button') || best;
+        };
+
+        let match = pickBestOption(matchesExactTarget);
+
+        if (!match && normalizedTarget.includes('qwen4')) {
+          match = pickBestOption((t) => t.includes('qwen4') && t.includes('max'));
+        }
 
         if (!match) {
-          match = options.find((el) => {
-            const t = (el.innerText || el.textContent || '').toLowerCase().replace(/[\s\-_]/g, '');
-            return t.includes('max') && !t.includes('mini');
-          });
+          match = pickBestOption((t) => t.includes('max') && t.includes('preview'));
+        }
+
+        if (!match) {
+          match = pickBestOption((t) => t.includes('max') && !t.includes('mini'));
         }
 
         if (match) {
           match.click();
           await this.sleep(400);
+          flightRecorder.info('Qwen', 'MODEL_SWITCHED', {
+            targetModel,
+            selectedText: (match.innerText || match.textContent || '').trim().slice(0, 60),
+          });
           console.log('[QwenAdapter] Successfully switched model to:', match.innerText);
           return true;
         }

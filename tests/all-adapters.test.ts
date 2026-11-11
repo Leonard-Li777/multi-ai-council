@@ -162,4 +162,51 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     const input = (chatGPTAdapter as any).findInputElement();
     expect(input?.id).toBe('prompt-textarea');
   });
+
+  it('qwenAdapter switches from Qwen3.8-Max to Qwen4-Max-Preview and skips when already active', async () => {
+    document.body.innerHTML = `
+      <header>
+        <button class="model-selector" aria-haspopup="listbox">Qwen3.8-Max</button>
+      </header>
+      <div class="dropdown-menu" style="display:none">
+        <div class="menu-list">
+          <div role="option" class="model-item" data-id="qwen38">Qwen3.8-Max</div>
+          <div role="option" class="model-item" data-id="qwen4max"><span>Qwen4-Max-Preview</span></div>
+          <div role="option" class="model-item" data-id="qwenplus">Qwen3.5-Plus</div>
+        </div>
+      </div>
+    `;
+
+    const trigger = document.querySelector<HTMLElement>('.model-selector')!;
+    const menu = document.querySelector<HTMLElement>('.dropdown-menu')!;
+    const qwen4Item = document.querySelector<HTMLElement>('[data-id="qwen4max"]')!;
+    const listWrapper = document.querySelector<HTMLElement>('.menu-list')!;
+
+    let listClicked = false;
+    let qwen4Clicked = false;
+    trigger.addEventListener('click', () => {
+      menu.style.display = 'block';
+    });
+    listWrapper.addEventListener('click', (e) => {
+      if (e.target === listWrapper) listClicked = true;
+    });
+    qwen4Item.addEventListener('click', () => {
+      qwen4Clicked = true;
+      trigger.innerText = 'Qwen4-Max-Preview';
+    });
+
+    const switched = await qwenAdapter.switchModel('Qwen4-Max-Preview');
+    expect(switched).toBe(true);
+    expect(qwen4Clicked).toBe(true);
+    expect(listClicked).toBe(false);
+
+    // 再次调用应检测到已是 Qwen4-Max-Preview 并直接跳过，不再触发点击展开
+    let triggerReclicked = false;
+    trigger.addEventListener('click', () => {
+      triggerReclicked = true;
+    });
+    const skipped = await qwenAdapter.switchModel('Qwen4-Max-Preview');
+    expect(skipped).toBe(true);
+    expect(triggerReclicked).toBe(false);
+  });
 });

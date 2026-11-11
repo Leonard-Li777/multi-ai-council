@@ -73,8 +73,8 @@ export default defineContentScript({
             await new Promise((r) => setTimeout(r, 400));
           }
 
-          // 尝试模型切换（若已处于 Max 系列或用户已手动选定，内部自动跳过）
-          await qwenAdapter.switchModel('3.8-Max');
+          // 尝试模型切换至 Qwen4-Max-Preview（若已是目标模型，内部自动跳过）
+          await qwenAdapter.switchModel('Qwen4-Max-Preview');
 
           send({
             type: 'STATUS_CHANGE',
