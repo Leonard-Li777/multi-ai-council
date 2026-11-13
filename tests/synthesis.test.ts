@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildAnonymizedSynthesisPrompt,
+  buildFollowUpSynthesisPrompt,
   sanitizeBrandMentions,
+  DEFAULT_SYNTHESIS_INSTRUCTION,
 } from '../lib/utils/synthesis-builder';
 import type { ProviderRun } from '../lib/types/review-job';
 
@@ -97,5 +99,77 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
     expect(result.metaPrompt).toContain('分歧辨析与场景对照（求同存异）');
     expect(result.metaPrompt).toContain('合理聚类与层级重构（观点移动归拢）');
     expect(result.metaPrompt).toContain('事实存疑与盲区提醒');
+  });
+
+  describe('buildFollowUpSynthesisPrompt (DeepSeek 当前会话专属追加提炼)', () => {
+    it('严格排除 DeepSeek 自身的回答，汇集所有其他模型，并附带指定终审提示词', () => {
+      const runs: ProviderRun[] = [
+        {
+          siteName: 'DeepSeek',
+          status: 'DONE',
+          responseSnapshot: 'DeepSeek 自身的回答：我不应该被包含在汇总提示词中。',
+          cleanedResponse: 'DeepSeek 自身的回答：我不应该被包含在汇总提示词中。',
+          retryCount: 0,
+        },
+        {
+          siteName: 'ChatGPT',
+          status: 'DONE',
+          responseSnapshot: '<think>思考过程</think>ChatGPT 观点：建议增加降级兜底。',
+          cleanedResponse: '<think>思考过程</think>ChatGPT 观点：建议增加降级兜底。',
+          retryCount: 0,
+        },
+        {
+          siteName: 'Qwen',
+          status: 'DONE',
+          responseSnapshot: 'Qwen 观点：务必检查持久化一致性。',
+          cleanedResponse: 'Qwen 观点：务必检查持久化一致性。',
+          retryCount: 0,
+        },
+      ];
+
+      const res = buildFollowUpSynthesisPrompt(runs, 'DeepSeek');
+
+      // 1. 验证数量排除了 DeepSeek
+      expect(res.participatingCount).toBe(2);
+      expect(Object.keys(res.anonymousMap)).toContain('ChatGPT');
+      expect(Object.keys(res.anonymousMap)).toContain('Qwen');
+      expect(Object.keys(res.anonymousMap)).not.toContain('DeepSeek');
+
+      // 2. 验证内容包含 ChatGPT 与 Qwen 的分块标记，不含 DeepSeek 自身的回答内容
+      expect(res.metaPrompt).toContain('### 【ChatGPT 的回答】');
+      expect(res.metaPrompt).toContain('ChatGPT 观点：建议增加降级兜底。');
+      expect(res.metaPrompt).not.toContain('<think>'); // 思考块已剥离
+      expect(res.metaPrompt).toContain('### 【Qwen 的回答】');
+      expect(res.metaPrompt).toContain('Qwen 观点：务必检查持久化一致性。');
+      expect(res.metaPrompt).not.toContain('DeepSeek 自身的回答');
+
+      // 3. 验证开头与结尾严格契合用户指定的提示词
+      expect(res.metaPrompt).toContain('以下是其他 AI 模型针对上述问题的回答：');
+      expect(res.metaPrompt).toContain(DEFAULT_SYNTHESIS_INSTRUCTION);
+      expect(res.metaPrompt).toContain('请结合你和他们的合并所有回复给出最终回答，不要漏掉任何不同观点，但可以给出你的建议；对于可能造成歧义的需要保留原观点原文，或解释清楚，避免你的模糊传达引起误解');
+    });
+
+    it('当除 DeepSeek 外没有其他已完成模型时返回空结果', () => {
+      const runs: ProviderRun[] = [
+        {
+          siteName: 'DeepSeek',
+          status: 'DONE',
+          responseSnapshot: 'DeepSeek 独立回复',
+          cleanedResponse: 'DeepSeek 独立回复',
+          retryCount: 0,
+        },
+        {
+          siteName: 'ChatGPT',
+          status: 'FAILED',
+          responseSnapshot: '',
+          cleanedResponse: '',
+          retryCount: 0,
+        },
+      ];
+
+      const res = buildFollowUpSynthesisPrompt(runs, 'DeepSeek');
+      expect(res.participatingCount).toBe(0);
+      expect(res.metaPrompt).toBe('');
+    });
   });
 });

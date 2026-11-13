@@ -217,8 +217,12 @@ export default defineContentScript({
             return;
           }
 
-          // 2. 强制开启全新会话，隔离历史上下文
-          await deepSeekAdapter.createNewChat();
+          // 2. 复用当前会话作为多轮追加提炼（若前序回答仍在生成，等待其生成结束）
+          let waitAttempts = 0;
+          while (deepSeekAdapter.findStopButton() && waitAttempts < 40) {
+            await new Promise((r) => setTimeout(r, 500));
+            waitAttempts++;
+          }
 
           // 3. 标记状态为 SENDING
           send({
@@ -226,7 +230,7 @@ export default defineContentScript({
             payload: { jobId, status: 'SENDING' },
           });
 
-          // 4. 模拟写入并提交
+          // 4. 模拟写入并提交（在 DeepSeek 当前会话中发送其他模型的回答与终审指令）
           const sent = await deepSeekAdapter.sendPrompt(metaPrompt);
           if (!sent) {
             send({

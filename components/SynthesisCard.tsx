@@ -97,7 +97,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
               )}
             </div>
-            <span className="text-[10px] text-slate-400">全景综合汇总 · 零不同观点遗漏 · 全新会话提炼</span>
+            <span className="text-[10px] text-slate-400">全景综合汇总 · 汇集他方观点 · 当前会话深度提炼</span>
           </div>
         </div>
 
@@ -178,12 +178,12 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
             <div className="text-center py-5 px-3 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
               <p>
                 {status === 'WAITING_READY' || status === 'SENDING'
-                  ? '已开启 DeepSeek 全新会话窗口，正在投递各 AI 回复数据进行全景汇总...'
+                  ? '正在向 DeepSeek 当前会话投递各 AI 回复数据进行全景汇总...'
                   : status === 'STREAMING'
                   ? 'DeepSeek 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...'
-                  : '等待各 AI 站点完成回复后，将自动调用 DeepSeek 开启全新会话进行全景汇总（严格综合全部回复、不遗漏任何不同观点）。'}
+                  : '已自动排除 DeepSeek 自身回复；点击下方按钮将其他模型的回答合并发送至 DeepSeek 当前会话进行综合提炼。'}
               </p>
-              {status === 'PENDING' && canTriggerSynthesis && onTriggerSynthesis && (
+              {status !== 'STREAMING' && canTriggerSynthesis && onTriggerSynthesis && (
                 <div className="pt-1">
                   <button
                     type="button"
@@ -191,7 +191,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                     className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium inline-flex items-center gap-1 shadow-2xs transition-colors cursor-pointer not-italic"
                   >
                     <Play className="w-3 h-3 fill-current" />
-                    <span>立即触发 DeepSeek 汇总</span>
+                    <span>{status === 'FAILED' ? '重试发送至 DeepSeek 汇总' : '立即发送至 DeepSeek 当前会话汇总'}</span>
                   </button>
                 </div>
               )}

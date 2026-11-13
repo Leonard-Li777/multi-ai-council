@@ -355,7 +355,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
     return null;
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('div[role="button"][aria-label*="停止"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="停止"]') ||

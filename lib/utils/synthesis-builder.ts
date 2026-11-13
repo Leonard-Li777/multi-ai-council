@@ -1,9 +1,64 @@
 import type { ProviderRun, SupportedSite } from '../types/review-job';
+import { stripThinkBlocks } from './think-block-strip';
 
 export interface SynthesisPromptResult {
   metaPrompt: string;
   anonymousMap: Record<string, SupportedSite>; // e.g. "Model A" -> "ChatGPT"
   participatingCount: number;
+}
+
+export const DEFAULT_SYNTHESIS_INSTRUCTION =
+  '请结合你和他们的合并所有回复给出最终回答，不要漏掉任何不同观点，但可以给出你的建议；对于可能造成歧义的需要保留原观点原文，或解释清楚，避免你的模糊传达引起误解';
+
+/**
+ * 为 DeepSeek 当前会话构造追加提炼提示词：
+ * 1. 严格排除 DeepSeek 自身的回答（因当前会话已有其自身回复与用户问题，杜绝冗余）
+ * 2. 汇集其他所有已完成/回填站点的回答并以各站点名称作为清晰分块
+ * 3. 剥离思考块，确保无冗余噪点
+ * 4. 结尾附上用户指定的核心合并指令
+ */
+export function buildFollowUpSynthesisPrompt(
+  runs: ProviderRun[],
+  excludeSite: SupportedSite = 'DeepSeek',
+  instruction: string = DEFAULT_SYNTHESIS_INSTRUCTION
+): SynthesisPromptResult {
+  // 1. 过滤出除 excludeSite 以外且已有实质内容的站点
+  const validRuns = runs.filter(
+    (r) =>
+      r.siteName !== excludeSite &&
+      (r.status === 'DONE' || r.status === 'PARTIAL') &&
+      ((r.cleanedResponse && r.cleanedResponse.trim().length > 0) ||
+        (r.responseSnapshot && r.responseSnapshot.trim().length > 0))
+  );
+
+  if (validRuns.length === 0) {
+    return {
+      metaPrompt: '',
+      anonymousMap: {},
+      participatingCount: 0,
+    };
+  }
+
+  const anonymousMap: Record<string, SupportedSite> = {};
+  const modelBlocks: string[] = [];
+
+  validRuns.forEach((run) => {
+    anonymousMap[run.siteName] = run.siteName;
+    const rawResponse = (run.cleanedResponse || run.responseSnapshot || '').trim();
+    const { cleaned } = stripThinkBlocks(rawResponse);
+
+    modelBlocks.push(
+      `### 【${run.siteName} 的回答】\n\n${cleaned.trim()}`
+    );
+  });
+
+  const metaPrompt = `以下是其他 AI 模型针对上述问题的回答：\n\n${modelBlocks.join('\n\n---\n\n')}\n\n---\n\n${instruction.trim()}`;
+
+  return {
+    metaPrompt,
+    anonymousMap,
+    participatingCount: validRuns.length,
+  };
 }
 
 const MODEL_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];

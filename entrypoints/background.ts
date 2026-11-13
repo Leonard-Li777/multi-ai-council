@@ -19,7 +19,10 @@ import {
   getTargetDispatchUrl,
   SITE_BASE_URLS,
 } from '../lib/utils/conversation-helper';
-import { buildAnonymizedSynthesisPrompt } from '../lib/utils/synthesis-builder';
+import {
+  buildAnonymizedSynthesisPrompt,
+  buildFollowUpSynthesisPrompt,
+} from '../lib/utils/synthesis-builder';
 import { calculateQuorumProgress } from '../lib/utils/quorum-calculator';
 import { flightRecorder } from '../lib/logger/flight-recorder';
 
@@ -998,40 +1001,89 @@ export default defineBackground(() => {
     if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
 
     const runs = Object.values(job.providerRuns);
-    const { metaPrompt, anonymousMap, participatingCount } = buildAnonymizedSynthesisPrompt(
-      job.originalPrompt,
-      runs
+    // 构造面向 DeepSeek 当前会话的追加提炼提示词（严格排除 DeepSeek 自身回复）
+    const { metaPrompt, anonymousMap, participatingCount } = buildFollowUpSynthesisPrompt(
+      runs,
+      'DeepSeek'
     );
 
     if (participatingCount === 0 || !metaPrompt) {
-      console.warn('[Background] No completed provider runs available for synthesis');
+      console.warn('[Background] No other completed provider runs available for synthesis');
       return;
     }
 
-    console.log(`[Background] Triggering synthesis for Job ${jobId} with ${participatingCount} anonymous models`);
+    console.log(`[Background] Triggering synthesis for Job ${jobId} with ${participatingCount} other models`);
 
     pendingSynthesisMetaPrompt = { jobId, metaPrompt };
 
-    // 1. 创建全新的 DeepSeek 标签页作为终审专用窗口并加入 Tab Group
-    const targetTab = await chrome.tabs.create({
-      url: 'https://chat.deepseek.com/',
-      active: false,
-    });
+    // 1. 优先查找 DeepSeek 当前会话已有标签页，绝不开启空白新标签页破坏当前会话上下文
+    let targetTabId: number | null = siteTabs.get('DeepSeek') || job.providerRuns['DeepSeek']?.tabId || null;
+    if (!targetTabId) {
+      const queryPatterns = SITE_QUERY_PATTERNS['DeepSeek'] || ['https://chat.deepseek.com/*'];
+      try {
+        const tabs = await chrome.tabs.query({ url: queryPatterns });
+        if (tabs.length > 0 && tabs[0]?.id) {
+          targetTabId = tabs[0].id;
+          siteTabs.set('DeepSeek', targetTabId);
+        }
+      } catch (e) {
+        console.warn('[Background] Query DeepSeek tab error:', e);
+      }
+    }
 
-    if (targetTab?.id) {
-      synthesisTabId = targetTab.id;
-      await ensureTabInCouncilGroup(targetTab.id);
+    // 2. 若 DeepSeek 标签页意外被关闭，以已保存的当前会话远程链接重新打开
+    if (!targetTabId) {
+      const convUrl = job.providerRuns['DeepSeek']?.conversationRef?.conversationUrl || 'https://chat.deepseek.com/';
+      try {
+        const newTab = await chrome.tabs.create({
+          url: convUrl,
+          active: false,
+        });
+        if (newTab?.id) {
+          targetTabId = newTab.id;
+          siteTabs.set('DeepSeek', targetTabId);
+          await ensureTabInCouncilGroup(targetTabId);
+        }
+      } catch (e) {
+        console.warn('[Background] Failed to recreate DeepSeek tab for synthesis:', e);
+      }
+    }
+
+    if (targetTabId) {
+      synthesisTabId = targetTabId;
     }
 
     const updated = await updateSynthesisRun(job.id, {
-      tabId: targetTab?.id,
-      status: 'WAITING_READY',
+      tabId: targetTabId || undefined,
+      status: 'SENDING',
       anonymousMap,
       finalMarkdown: '',
     });
 
-    if (updated && sidePanelPort) {
-      sidePanelPort.postMessage({ type: 'JOB_SYNC', payload: { job: updated } });
+    if (updated) {
+      broadcastJobSync(updated);
+    }
+
+    // 3. 立即下发终审提示词至 DeepSeek 当前会话
+    if (targetTabId) {
+      await ensureContentScriptReady(targetTabId, 'DeepSeek');
+      const port = contentPorts.get('DeepSeek');
+      if (port) {
+        try {
+          port.postMessage({
+            type: 'DISPATCH_SYNTHESIS_PROMPT',
+            payload: { jobId, metaPrompt },
+          });
+        } catch (e) {
+          console.warn('[Background] Port postMessage DISPATCH_SYNTHESIS_PROMPT failed:', e);
+        }
+      }
+      chrome.tabs.sendMessage(targetTabId, {
+        type: 'DISPATCH_SYNTHESIS_PROMPT',
+        payload: { jobId, metaPrompt },
+      }).catch((err) => {
+        console.warn('[Background] sendMessage DISPATCH_SYNTHESIS_PROMPT failed:', err);
+      });
     }
   }
 });
