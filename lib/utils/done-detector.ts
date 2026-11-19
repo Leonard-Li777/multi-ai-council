@@ -1,4 +1,5 @@
 import { flightRecorder } from '../logger/flight-recorder';
+import { scrollReplyContainerToBottom } from './auto-scroller';
 
 /**
  * 四信号生成完成判定器
@@ -31,6 +32,8 @@ export class QuadSignalDoneDetector {
   private initialContentLength = 0;
   private startTime = Date.now();
   private lastContentUpdateTime = Date.now();
+  private targetElement: HTMLElement | null = null;
+  private lastAutoScrollTime = 0;
 
   constructor(options: DoneDetectorOptions) {
     this.options = {
@@ -45,9 +48,14 @@ export class QuadSignalDoneDetector {
     this.hasEverGenerated = false;
     this.startTime = Date.now();
     this.lastContentUpdateTime = Date.now();
+    this.targetElement = targetElement;
+    this.lastAutoScrollTime = 0;
     const initial = this.options.getCurrentContent().trim();
     this.initialContentLength = initial.length;
     this.lastContentLength = this.initialContentLength;
+
+    // 初始滚动到底部，确保视口对准最新回复区域
+    this.tryAutoScroll(true);
 
     // 1. 启动 DOM Mutation 监听
     this.observer = new MutationObserver(() => {
@@ -64,6 +72,8 @@ export class QuadSignalDoneDetector {
     // 2. 轮询检查按钮状态与内容快照（双重兜底，防止极端情况下 DOM Mutation 漏报）
     this.pollInterval = window.setInterval(() => {
       if (this.isCompleted) return;
+      // 生成期间定期将回复内容区滚到底部，强制唤醒虚拟列表/视口外懒渲染内容
+      this.tryAutoScroll();
       const current = this.options.getCurrentContent();
       const currentLen = current.trim().length;
 
@@ -83,6 +93,14 @@ export class QuadSignalDoneDetector {
     }, 500);
   }
 
+  private tryAutoScroll(force = false) {
+    if (this.isCompleted) return;
+    const now = Date.now();
+    if (!force && now - this.lastAutoScrollTime < 800) return;
+    this.lastAutoScrollTime = now;
+    scrollReplyContainerToBottom(this.targetElement);
+  }
+
   private handleMutation() {
     const current = this.options.getCurrentContent();
     const currentLen = current.trim().length;
@@ -92,6 +110,7 @@ export class QuadSignalDoneDetector {
     if (currentLen !== this.lastContentLength) {
       this.lastContentLength = currentLen;
       this.lastContentUpdateTime = Date.now();
+      this.tryAutoScroll();
       if (currentLen > 0) {
         this.options.onUpdate(current);
       }
@@ -260,6 +279,7 @@ export class QuadSignalDoneDetector {
       window.clearInterval(this.pollInterval);
       this.pollInterval = null;
     }
+    this.targetElement = null;
   }
 }
 
