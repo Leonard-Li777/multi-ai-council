@@ -17,11 +17,15 @@ export class ChatGPTAdapter implements AISiteAdapter {
   private currentSnapshot = '';
   private baselineLastElement: HTMLElement | null = null;
   private baselineLastContent = '';
+  private baselineArticleCount = 0;
+  private lastPromptLength = 0;
+  private didClickSend = false;
 
   public recordBaseline(): void {
     const el = this.findLatestAssistantMessageElement();
     this.baselineLastElement = el;
     this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
+    this.baselineArticleCount = document.querySelectorAll('article').length;
   }
 
   /**
@@ -171,6 +175,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
     }
 
     flightRecorder.info('ChatGPT', 'INPUT_FOUND', { tag: input.tagName, id: input.id });
+    this.lastPromptLength = prompt.length;
+    this.didClickSend = false;
 
     // 2. 模拟写入 ProseMirror 富文本或标准 textarea
     input.focus();
@@ -228,6 +234,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         if (!isDisabled) {
           sendBtn.click();
           submitted = true;
+          this.didClickSend = true;
           flightRecorder.info('ChatGPT', 'SEND_BUTTON_CLICKED', { attempt });
           await this.sleep(800);
           break;
@@ -237,6 +244,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
           sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
           submitted = true;
+          this.didClickSend = true;
           flightRecorder.warn('ChatGPT', 'SEND_BUTTON_FORCE_CLICKED', { attempt });
           await this.sleep(800);
           break;
@@ -271,11 +279,27 @@ export class ChatGPTAdapter implements AISiteAdapter {
    * 验证消息是否提交成功
    */
   public async validateSubmission(): Promise<boolean> {
+    const isInputClearedOrShrunk = (el: HTMLElement): boolean => {
+      const val = (el instanceof HTMLTextAreaElement ? el.value : (el.innerText || el.textContent || '')).trim();
+      if (val.length === 0) return true;
+      // 针对超长提示词（如 49,000 字）被 ProseMirror 折叠为附件胶囊或已清空但留有占位符的场景
+      if (this.lastPromptLength > 200 && val.length < Math.min(80, this.lastPromptLength * 0.1)) {
+        return true;
+      }
+      return false;
+    };
+
     for (let i = 0; i < 15; i++) {
       await this.sleep(400);
       const stopBtn = this.findStopButton();
       if (stopBtn) {
         flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'STOP_BUTTON_DETECTED' });
+        return true;
+      }
+
+      // 检查是否已经产生新的消息 article（包含用户提问卡片上屏）
+      if (document.querySelectorAll('article').length > this.baselineArticleCount) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'NEW_ARTICLE_RENDERED' });
         return true;
       }
 
@@ -293,37 +317,34 @@ export class ChatGPTAdapter implements AISiteAdapter {
       }
 
       const input = this.findInputElement();
-      if (input) {
-        const val = input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '');
-        // 只有当至少经历了两轮轮询 (i >= 2) 且输入框被清空时才视为提交完成
-        if (val.trim().length === 0 && i >= 2) {
-          flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
-          return true;
-        }
+      if (input && i >= 2 && isInputClearedOrShrunk(input)) {
+        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
+        return true;
       }
     }
 
-    // 最终检查：若依然有 stop 按钮则判定成功
+    // 最终检查：若依然有 stop 按钮、新 article 或新回答容器则判定成功
     if (this.findStopButton()) {
       flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_STOP_BUTTON_DETECTED' });
       return true;
     }
 
-    // 检查是否有新的回答容器
+    if (document.querySelectorAll('article').length > this.baselineArticleCount) {
+      flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_NEW_ARTICLE_RENDERED' });
+      return true;
+    }
+
     const finalLastMsg = this.findLatestAssistantMessageElement();
     if (finalLastMsg && finalLastMsg !== this.baselineLastElement) {
       flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_NEW_ASSISTANT_MESSAGE_DETECTED' });
       return true;
     }
 
-    // 若输入框已被清空也判定成功
+    // 若输入框已被清空或大幅缩减也判定成功
     const finalInput = this.findInputElement();
-    if (finalInput) {
-      const val = finalInput instanceof HTMLTextAreaElement ? finalInput.value : (finalInput.innerText || finalInput.textContent || '');
-      if (val.trim().length === 0) {
-        flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_INPUT_CLEARED' });
-        return true;
-      }
+    if (finalInput && isInputClearedOrShrunk(finalInput)) {
+      flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'FINAL_INPUT_CLEARED' });
+      return true;
     }
 
     // 唯一单次温和补发兜底：仅在经过整整 6 秒无响应且依然处于未发送时尝试单次 Enter，严禁循环内频繁轰炸
@@ -335,9 +356,23 @@ export class ChatGPTAdapter implements AISiteAdapter {
       finalInput.dispatchEvent(new KeyboardEvent('keypress', eventInit));
       finalInput.dispatchEvent(new KeyboardEvent('keyup', eventInit));
       await this.sleep(1000);
-      if (this.findStopButton() || window.location.pathname.startsWith('/c/')) {
+      if (
+        this.findStopButton() ||
+        window.location.pathname.startsWith('/c/') ||
+        document.querySelectorAll('article').length > this.baselineArticleCount ||
+        isInputClearedOrShrunk(finalInput)
+      ) {
         return true;
       }
+    }
+
+    // Fail-Open 防误杀：如果此前已明确点击发送按钮（SEND_BUTTON_CLICKED），绝不因后台标签页定时器节流或超长提示词渲染延迟而放弃挂载监听器！
+    if (this.didClickSend) {
+      flightRecorder.warn('ChatGPT', 'VALIDATE_SUBMISSION_FAIL_OPEN', {
+        reason: 'SEND_CLICKED_PROCEED_TO_LISTEN',
+        promptLength: this.lastPromptLength,
+      });
+      return true;
     }
 
     flightRecorder.warn('ChatGPT', 'VALIDATE_SUBMISSION_FAIL', { reason: 'PROMPT_STILL_IN_INPUT_NO_STOP' });
@@ -552,10 +587,13 @@ export class ChatGPTAdapter implements AISiteAdapter {
   private findStopButton(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('button[data-testid="stop-button"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="Stop streaming"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="Stop generating"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="停止生成"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="停止响应"]')
+      document.querySelector<HTMLElement>('button[aria-label*="Stop streaming" i]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="Stop generating" i]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止生成"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止响应"]') ||
+      document.querySelector<HTMLElement>('button[aria-label*="停止流"]') ||
+      document.querySelector<HTMLElement>('form button[aria-label="Stop" i]') ||
+      document.querySelector<HTMLElement>('form button[aria-label="停止"]')
     );
   }
 

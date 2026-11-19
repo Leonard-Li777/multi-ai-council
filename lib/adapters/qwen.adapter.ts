@@ -682,63 +682,105 @@ export class QwenAdapter implements AISiteAdapter {
     return userNodes.length > 0 ? userNodes[userNodes.length - 1]! : null;
   }
 
-  private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有机器人轮次外层卡片（严格排除底部固定输入框、编辑器容器与用户卡片）
-    const turns = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]:not([class*="bottom"]):not([class*="editor"]):not([class*="textarea"])'
-      )
-    ).filter((el) => {
-      const cls = (el.className || '').toString().toLowerCase();
-      if (cls.includes('input') || cls.includes('fixed') || cls.includes('editor')) return false;
-      return !isUserTurnElement(el);
-    });
+  /**
+   * 判断节点是否为包含多个消息回合的列表/包裹容器，或内部包含用户提问气泡，或文本直接回显了当前用户提示词
+   */
+  private isInvalidAssistantCandidate(el: HTMLElement | null): boolean {
+    if (!el) return true;
+    if (isUserTurnElement(el)) return true;
 
-    if (turns.length > 0) {
-      // 过滤掉嵌套在其它同类候选容器内部的子元素，保证获取到的是最外层的完整轮次
-      const topLevelTurns = turns.filter((el) => {
+    const cls = (el.className || '').toString().toLowerCase();
+    if (
+      cls.includes('input') ||
+      cls.includes('fixed') ||
+      cls.includes('editor') ||
+      cls.includes('textarea') ||
+      cls.includes('message-list') ||
+      cls.includes('chat-list') ||
+      cls.includes('conversation-list') ||
+      cls.includes('history-list')
+    ) {
+      return true;
+    }
+
+    // 致命防护：如果候选节点内部包含用户提问节点，说明它是一个包裹了“用户+助手”的外层容器（如 chat-message-list），严禁采纳！
+    if (
+      el.querySelector(
+        '[data-role="user"], [data-is-user="true"], [data-message-author-role="user"], div[class*="chat-item-user"], div[class*="message-item-user"], div[class*="user-message"], div[class*="message-user"]'
+      ) !== null
+    ) {
+      return true;
+    }
+
+    // 提示词回显防护：如果该节点头部文本直接与本次发送的 lastPrompt 高度重合，说明误中了用户气泡或混合容器，跳过继续向内/向下查找
+    if (this.lastPrompt && this.lastPrompt.trim().length >= 30) {
+      const normPromptLead = this.lastPrompt.trim().slice(0, 60).replace(/\s+/g, '');
+      const normElLead = (el.innerText || el.textContent || '').trim().slice(0, 120).replace(/\s+/g, '');
+      if (normPromptLead.length >= 20 && normElLead.includes(normPromptLead)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private findLatestAssistantMessageElement(): HTMLElement | null {
+    // 1. 优先精确查找明确的助手角色轮次卡片（不再使用过于宽泛的 div[class*="chat-message"] 避免误吞 chat-message-list）
+    const explicitTurns = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-role="assistant"], [data-message-author-role="assistant"], div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="response-message"]'
+      )
+    ).filter((el) => !this.isInvalidAssistantCandidate(el));
+
+    if (explicitTurns.length > 0) {
+      const topLevelTurns = explicitTurns.filter((el) => {
         return !el.parentElement?.closest(
-          'div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="chat-message"]'
+          '[data-role="assistant"], [data-message-author-role="assistant"], div[class*="chat-item-assistant"], div[class*="message-item-assistant"], div[class*="assistant-item"], div[class*="message-assistant"], div[class*="assistant-message"], div[class*="response-message"]'
         );
       });
-      const candidate = (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : turns[turns.length - 1]) ?? null;
-      if (candidate && !isUserTurnElement(candidate)) {
+      const candidate =
+        (topLevelTurns.length > 0 ? topLevelTurns[topLevelTurns.length - 1] : explicitTurns[explicitTurns.length - 1]) ??
+        null;
+      if (candidate && !this.isInvalidAssistantCandidate(candidate)) {
         return candidate;
       }
     }
 
-    // 2. 特征锚点定位：通过助手专属操作按钮（重新生成、复制回答、点赞）定位所属父级卡片
+    // 2. 特征锚点定位：通过助手专属操作按钮（重新生成、复制回答、点赞）反向溯源所属单轮卡片
     const assistantButtons = Array.from(
       document.querySelectorAll<HTMLElement>(
-        'button[aria-label*="复制"], button[aria-label*="重新生成"], div[class*="operate-btn"]'
+        'button[aria-label*="重新生成"], button[aria-label*="Regenerate" i], button[aria-label*="复制"], button[aria-label*="Copy" i], div[class*="operate-btn"]'
       )
     );
     for (let i = assistantButtons.length - 1; i >= 0; i--) {
       const btn = assistantButtons[i]!;
       const parentCard = btn.closest<HTMLElement>(
-        'div[class*="chat-message"], div[class*="message-item"], div[class*="item"], div[class*="assistant"]'
+        '[data-role="assistant"], div[class*="message-item"], div[class*="chat-item"], div[class*="assistant"], div[class*="response-message"]'
       );
-      if (parentCard && !isUserTurnElement(parentCard)) {
+      if (parentCard && !this.isInvalidAssistantCandidate(parentCard)) {
         return parentCard;
       }
     }
 
-    // 3. 降级：查找 qwen-markdown 容器，但必须显式过滤用户气泡！
+    // 3. 降级：查找 qwen-markdown / markdown 正文容器，严格过滤用户气泡与提示词回显
     const mdBodies = Array.from(
-      document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="markdown-body"], div[class*="markdown"]')
+      document.querySelectorAll<HTMLElement>('div.qwen-markdown, div[class*="qwen-markdown"], div[class*="markdown-body"], div[class*="markdown"]')
     ).filter((el) => {
+      if (this.isInvalidAssistantCandidate(el)) return false;
       let parent = el.parentElement;
       while (parent && parent !== document.body) {
         if (isUserTurnElement(parent)) return false;
         parent = parent.parentElement;
       }
-      return true;
+      return (el.innerText || el.textContent || '').trim().length > 0;
     });
 
     if (mdBodies.length > 0) {
       const lastMd = mdBodies[mdBodies.length - 1]!;
-      const parentCard = lastMd.closest<HTMLElement>('div[class*="message"], div[class*="chat-item"], div[class*="item"]');
-      if (parentCard && !isUserTurnElement(parentCard)) {
+      const parentCard = lastMd.closest<HTMLElement>(
+        '[data-role="assistant"], div[class*="message-item"], div[class*="chat-item"], div[class*="assistant"], div[class*="response-message"]'
+      );
+      if (parentCard && !this.isInvalidAssistantCandidate(parentCard)) {
         return parentCard;
       }
       return lastMd;

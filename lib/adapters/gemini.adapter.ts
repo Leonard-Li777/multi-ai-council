@@ -247,10 +247,13 @@ export class GeminiAdapter implements AISiteAdapter {
           }
         }
 
-        // 核心：从轮次或父级容器中提取全部 message-content 段落，实现全量合并杜绝截断
-        const msgContents = Array.from(lastMsgEl.querySelectorAll<HTMLElement>('message-content')).filter(
-          (el) => (el.innerText || el.textContent || '').trim().length > 0
-        );
+        // 核心：从轮次或父级容器中提取全部非思考块的 message-content 段落，实现全量合并杜绝截断
+        const msgContents = Array.from(lastMsgEl.querySelectorAll<HTMLElement>('message-content')).filter((el) => {
+          if (el.closest('model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"]')) {
+            return false;
+          }
+          return (el.innerText || el.textContent || '').trim().length > 0;
+        });
 
         let result = '';
         if (msgContents.length > 0) {
@@ -258,7 +261,11 @@ export class GeminiAdapter implements AISiteAdapter {
           result = msgContents
             .map((el) => {
               const clone = el.cloneNode(true) as HTMLElement;
-              clone.querySelectorAll('button, [class*="footer"], [class*="toolbar"]').forEach((b) => b.remove());
+              clone
+                .querySelectorAll(
+                  'model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"], button, [class*="footer"], [class*="toolbar"]'
+                )
+                .forEach((b) => b.remove());
               const md = domToMarkdown(clone);
               return (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
             })
@@ -266,17 +273,13 @@ export class GeminiAdapter implements AISiteAdapter {
             .join('\n\n');
         } else {
           // 若无独立 message-content 标签，清理 targetEl 后兜底提取
-          let targetEl = lastMsgEl;
-          const noisyNodes = targetEl.querySelectorAll(
-            'div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]'
-          );
-          if (noisyNodes.length > 0) {
-            const clone = targetEl.cloneNode(true) as HTMLElement;
-            clone
-              .querySelectorAll('div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]')
-              .forEach((n) => n.remove());
-            targetEl = clone;
-          }
+          const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+          clone
+            .querySelectorAll(
+              'model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"], div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]'
+            )
+            .forEach((n) => n.remove());
+          const targetEl = clone;
           result = (targetEl.innerText || targetEl.textContent || '').trim();
           try {
             const md = domToMarkdown(targetEl);
@@ -437,14 +440,14 @@ export class GeminiAdapter implements AISiteAdapter {
     const container = input ? (input.closest('rich-textarea, div[class*="input-area"], div[class*="text-input"], form') as HTMLElement | null) : null;
     if (container) {
       const stopCandidate = container.querySelector<HTMLElement>(
-        'button[aria-label*="Stop response"], button[aria-label*="停止回答"], button[aria-label*="Stop generating"], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
+        'button[aria-label*="Stop response" i], button[aria-label*="停止回答"], button[aria-label*="Stop generating" i], button[aria-label*="停止生成"], button[aria-label="Stop" i], button[aria-label="停止"], button[data-test-id*="stop-button"], button.stop-button'
       );
       if (stopCandidate) return stopCandidate;
     }
 
     // 2. 在 document 范围内仅精确匹配生成特有的停止响应按钮（严禁匹配宽泛的 Stop/停止，杜绝误命中 TTS 朗读与播放控制）
     const stopDocCandidate = document.querySelector<HTMLElement>(
-      'button[aria-label*="Stop response"], button[aria-label*="停止回答"], button[aria-label*="Stop generating"], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
+      'button[aria-label*="Stop response" i], button[aria-label*="停止回答"], button[aria-label*="Stop generating" i], button[aria-label*="停止生成"], button[data-test-id*="stop-button"], button.stop-button'
     );
     if (stopDocCandidate) return stopDocCandidate;
 
@@ -452,14 +455,21 @@ export class GeminiAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有 model-response 消息卡片（严格排除独立的 footer/header/toolbar）
+    // 1. 查找所有顶层 model-response 消息卡片（严格排除嵌套子元素与独立的 footer/header/toolbar）
     const modelResponses = Array.from(
       document.querySelectorAll<HTMLElement>(
         'model-response, [data-test-id*="model-response"], div[class*="model-response"], div[class*="model-turn"]'
       )
     ).filter((el) => {
       const cls = (el.className || '').toString().toLowerCase();
-      return !cls.includes('footer') && !cls.includes('header') && !cls.includes('toolbar') && !cls.includes('action');
+      if (cls.includes('footer') || cls.includes('header') || cls.includes('toolbar') || cls.includes('action')) {
+        return false;
+      }
+      // 过滤掉嵌套在 model-response 内部的 div.model-response-text 等子块，保证始终命中完整的顶层轮次卡片
+      if (el.parentElement?.closest('model-response, [data-test-id*="model-response"]')) {
+        return false;
+      }
+      return true;
     });
 
     if (modelResponses.length > 0) {

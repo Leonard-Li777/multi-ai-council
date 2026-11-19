@@ -209,4 +209,72 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     expect(skipped).toBe(true);
     expect(triggerReclicked).toBe(false);
   });
+
+  it('qwenAdapter ignores outer chat-message-list wrapper containing user prompt and extracts assistant reply without PROMPT_ECHO_REJECTED', () => {
+    const prompt = '这是一段用于架构红队审查的超长用户提示词，包含工作流主题个性化 BaseAIConfig 与五维运行时降级技术规格说明书。';
+    document.body.innerHTML = '';
+    qwenAdapter.recordBaseline();
+    document.body.innerHTML = `
+      <div class="chat-message-list">
+        <div class="chat-item-user" data-role="user">
+          <div class="qwen-markdown">${prompt}</div>
+        </div>
+        <div class="chat-item-assistant" data-role="assistant">
+          <div class="qwen-markdown">
+            <h1>架构审查结论：工作流主题个性化</h1>
+            <p>方案主干方向正确，以下列出 3 个核心改进建议与完整落地方案。</p>
+          </div>
+        </div>
+      </div>
+    `;
+
+    (qwenAdapter as any).lastPrompt = prompt;
+    const stopListener = qwenAdapter.listenGeneration(
+      () => {},
+      () => {}
+    );
+    const detector = (qwenAdapter as any).activeDetector;
+    const current = detector.options.getCurrentContent();
+    expect(current).toContain('架构审查结论：工作流主题个性化');
+    expect(current).not.toContain('这是一段用于架构红队审查的超长用户提示词');
+    stopListener();
+  });
+
+  it('geminiAdapter selects top-level model-response, strips model-thoughts, and merges all message-content blocks', () => {
+    document.body.innerHTML = `
+      <main>
+        <model-response>
+          <model-thoughts>
+            <message-content><p>内部思维链不应该被抓取。</p></message-content>
+          </model-thoughts>
+          <div class="model-response-text">
+            <message-content><h3>[ISS-01] 第一部分审查结论</h3><p>这里是第一段完整分析。</p></message-content>
+          </div>
+          <div class="model-response-text">
+            <message-content><h3>[ISS-02] 第二部分审查结论</h3><p>这里是第二段完整分析。</p></message-content>
+          </div>
+        </model-response>
+      </main>
+    `;
+
+    const stopListener = geminiAdapter.listenGeneration(
+      () => {},
+      () => {}
+    );
+    const detector = (geminiAdapter as any).activeDetector;
+    const current = detector.options.getCurrentContent();
+    expect(current).toContain('[ISS-01] 第一部分审查结论');
+    expect(current).toContain('[ISS-02] 第二部分审查结论');
+    expect(current).not.toContain('内部思维链不应该被抓取');
+    stopListener();
+  });
+
+  it('chatGPTAdapter validateSubmission passes when new article renders after baseline', async () => {
+    document.body.innerHTML = `<main></main>`;
+    chatGPTAdapter.recordBaseline();
+
+    document.querySelector('main')!.innerHTML = `<article data-message-author-role="user">长提示词</article>`;
+    const ok = await chatGPTAdapter.validateSubmission();
+    expect(ok).toBe(true);
+  });
 });
