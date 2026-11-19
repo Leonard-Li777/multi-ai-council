@@ -166,4 +166,93 @@ describe('AC4: DeepSeek R1 思考过程与正文管道分离解析', () => {
     expect(parser.getContentText()).toBe('最终正式结论在这里。');
     expect(parser.getReasoningText()).toContain('这是第一步思考，第二步推导。');
   });
+
+  it('能跨帧记忆 DeepSeek Web JSON-Patch v2 (response/fragments) 的 THINK 状态，彻底阻断省略 p 字段的简写 {v} 思维链泄漏', () => {
+    const parser = new DeepSeekStreamParser();
+
+    // 1. 声明进入 THINK fragment
+    const t0 = parser.parseEvent({
+      data: JSON.stringify({
+        p: 'response/fragments',
+        o: 'APPEND',
+        v: [{ id: 1, type: 'THINK', content: '回答中文。' }],
+      }),
+    });
+    expect(t0?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+
+    // 2. 路径指向 fragments/-1/content（仍处于 THINK 阶段）
+    const t1 = parser.parseEvent({
+      data: JSON.stringify({
+        p: 'response/fragments/-1/content',
+        o: 'APPEND',
+        v: '需要审查方案，',
+      }),
+    });
+    expect(t1?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+
+    // 3. 省略 p 字段的简写帧 { v: "..." } —— 必须继承 THINK 状态，绝不泄漏进正文！
+    const t2 = parser.parseEvent({
+      data: JSON.stringify({ v: '一次性穷尽。先核验模板。' }),
+    });
+    expect(t2?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+    expect(parser.getReasoningText()).toBe('回答中文。需要审查方案，一次性穷尽。先核验模板。');
+
+    // 4. 切换为 RESPONSE fragment
+    const c0 = parser.parseEvent({
+      data: JSON.stringify({
+        p: 'response/fragments',
+        o: 'APPEND',
+        v: [{ id: 2, type: 'RESPONSE', content: '## 正式结论\n' }],
+      }),
+    });
+    expect(c0?.kind).toBe('CONTENT');
+    expect(c0?.text).toBe('## 正式结论\n');
+
+    // 5. RESPONSE 阶段的省略 p 字段简写帧 { v: "..." } —— 正常进入正文
+    const c1 = parser.parseEvent({
+      data: JSON.stringify({ v: '第一条建议。' }),
+    });
+    expect(c1?.kind).toBe('CONTENT');
+    expect(parser.getContentText()).toBe('## 正式结论\n第一条建议。');
+
+    // 6. 状态结束帧 response/status = FINISHED，不应把 "FINISHED" 混入正文
+    const done = parser.parseEvent({
+      data: JSON.stringify({ p: 'response/status', o: 'SET', v: 'FINISHED' }),
+    });
+    expect(done?.kind).toBe('DONE');
+    expect(done?.isDone).toBe(true);
+    expect(parser.getContentText()).toBe('## 正式结论\n第一条建议。');
+  });
+
+  it('能跨帧记忆 DeepSeek Web JSON-Patch v1 (response/thinking_content -> response/content) 并支持 BATCH 批量补丁', () => {
+    const parser = new DeepSeekStreamParser();
+
+    parser.parseEvent({
+      data: JSON.stringify({ p: 'response/thinking_content', o: 'APPEND', v: '思考A' }),
+    });
+    const tShort = parser.parseEvent({
+      data: JSON.stringify({ v: '思考B' }),
+    });
+    expect(tShort?.kind).toBe('THINKING');
+    expect(parser.getContentText()).toBe('');
+
+    // BATCH 切换到正文
+    const batch = parser.parseEvent({
+      data: JSON.stringify({
+        p: 'response',
+        o: 'BATCH',
+        v: [
+          { p: 'response/thinking_elapsed_secs', v: 14 },
+          { p: 'response/content', o: 'APPEND', v: '正式回复1' },
+          { v: '正式回复2' },
+        ],
+      }),
+    });
+    expect(batch?.kind).toBe('CONTENT');
+    expect(parser.getContentText()).toBe('正式回复1正式回复2');
+    expect(parser.getReasoningText()).toBe('思考A思考B');
+  });
 });

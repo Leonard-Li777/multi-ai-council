@@ -2,8 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   buildAnonymizedSynthesisPrompt,
   buildFollowUpSynthesisPrompt,
+  buildSequentialSynthesisSteps,
   sanitizeBrandMentions,
   DEFAULT_SYNTHESIS_INSTRUCTION,
+  SEQUENTIAL_SYNTHESIS_PREAMBLE,
+  SEQUENTIAL_SYNTHESIS_FINAL_COMMIT,
 } from '../lib/utils/synthesis-builder';
 import type { ProviderRun } from '../lib/types/review-job';
 
@@ -170,6 +173,66 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       const res = buildFollowUpSynthesisPrompt(runs, 'DeepSeek');
       expect(res.participatingCount).toBe(0);
       expect(res.metaPrompt).toBe('');
+    });
+  });
+
+  describe('buildSequentialSynthesisSteps (分轮依次送审至 DeepSeek 当前会话)', () => {
+    it('按「引导提示词 -> 逐个站点(排除DeepSeek) -> 提交完成」生成严格分轮计划', () => {
+      const runs: ProviderRun[] = [
+        {
+          siteName: 'DeepSeek',
+          status: 'DONE',
+          responseSnapshot: 'DeepSeek 自身回复（应排除）',
+          cleanedResponse: 'DeepSeek 自身回复（应排除）',
+          retryCount: 0,
+        },
+        {
+          siteName: 'ChatGPT',
+          status: 'DONE',
+          responseSnapshot: '<think>思考内容</think>ChatGPT 核心结论。',
+          cleanedResponse: '<think>思考内容</think>ChatGPT 核心结论。',
+          retryCount: 0,
+        },
+        {
+          siteName: 'Qwen',
+          status: 'DONE',
+          responseSnapshot: 'Qwen 核心结论。',
+          cleanedResponse: 'Qwen 核心结论。',
+          retryCount: 0,
+        },
+        {
+          siteName: 'Gemini',
+          status: 'FAILED',
+          responseSnapshot: '',
+          cleanedResponse: '',
+          retryCount: 0,
+        },
+      ];
+
+      const plan = buildSequentialSynthesisSteps(runs, 'DeepSeek');
+
+      expect(plan.participatingCount).toBe(2);
+      // 总计 4 轮：引导 + ChatGPT + Qwen + 提交完成
+      expect(plan.steps.length).toBe(4);
+
+      expect(plan.steps[0]?.id).toBe('preamble');
+      expect(plan.steps[0]?.prompt).toBe(SEQUENTIAL_SYNTHESIS_PREAMBLE);
+      expect(plan.steps[0]?.isFinal).toBe(false);
+
+      expect(plan.steps[1]?.siteName).toBe('ChatGPT');
+      expect(plan.steps[1]?.prompt).toContain('### 【ChatGPT 的回答】');
+      expect(plan.steps[1]?.prompt).toContain('ChatGPT 核心结论。');
+      expect(plan.steps[1]?.prompt).not.toContain('<think>');
+      expect(plan.steps[1]?.isFinal).toBe(false);
+
+      expect(plan.steps[2]?.siteName).toBe('Qwen');
+      expect(plan.steps[2]?.prompt).toContain('### 【Qwen 的回答】');
+      expect(plan.steps[2]?.prompt).toContain('Qwen 核心结论。');
+      expect(plan.steps[2]?.isFinal).toBe(false);
+
+      expect(plan.steps[3]?.id).toBe('commit');
+      expect(plan.steps[3]?.prompt).toBe(SEQUENTIAL_SYNTHESIS_FINAL_COMMIT);
+      expect(plan.steps[3]?.isFinal).toBe(true);
     });
   });
 });

@@ -13,6 +13,8 @@ export default defineContentScript({
     let stopListening: (() => void) | null = null;
     let currentJobId: string | null = null;
     let isDispatching = false;
+    let isSynthesizing = false;
+    let activeSynthesisToken = 0;
     let lastHandledJobId = '';
     let sendFn: ((msg: PortMessage) => void) | null = null;
     const send = (msg: PortMessage) => {
@@ -194,15 +196,71 @@ export default defineContentScript({
           });
         }
       } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
-        const { jobId, metaPrompt } = msg.payload;
+        const { jobId, metaPrompt, steps } = msg.payload;
+        if (isSynthesizing && currentJobId === jobId) {
+          console.log(`[DeepSeekContent] Ignoring duplicate SYNTHESIS dispatch for Job ${jobId}`);
+          return;
+        }
         currentJobId = jobId;
+        isSynthesizing = true;
+        activeSynthesisToken++;
+        const myToken = activeSynthesisToken;
 
-        console.log(`[DeepSeekContent] Received SYNTHESIS prompt for Job ${jobId}`);
+        const synthesisQueue =
+          steps && steps.length > 0
+            ? steps
+            : [{ id: 'single', label: '发送终审提示词', prompt: metaPrompt, isFinal: true }];
+
+        console.log(
+          `[DeepSeekContent] Received SYNTHESIS prompt for Job ${jobId}, sequential turns: ${synthesisQueue.length}`
+        );
+
+        const waitUntilIdle = async (maxWaitMs = 60000) => {
+          const deadline = Date.now() + maxWaitMs;
+          while (deepSeekAdapter.findStopButton() && Date.now() < deadline) {
+            if (myToken !== activeSynthesisToken) return;
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        };
+
+        const waitForIntermediateTurnDone = (timeoutMs = 150000): Promise<void> => {
+          return new Promise((resolve) => {
+            if (stopListening) {
+              stopListening();
+              stopListening = null;
+            }
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timer);
+              if (stopListening) {
+                stopListening();
+                stopListening = null;
+              }
+              resolve();
+            };
+
+            const timer = window.setTimeout(() => {
+              console.warn('[DeepSeekContent] Intermediate synthesis turn timed out, continuing to next turn');
+              finish();
+            }, timeoutMs);
+
+            stopListening = deepSeekAdapter.listenGeneration(
+              () => {},
+              () => {
+                finish();
+              },
+              { allowShortReply: true, silenceThresholdMs: 2500 }
+            );
+          });
+        };
 
         try {
           // 1. 检查页面阻断状态
           const blocker = await deepSeekAdapter.checkBlocker();
           if (blocker === 'CAPTCHA') {
+            isSynthesizing = false;
             send({
               type: 'SYNTHESIS_STATUS_CHANGE',
               payload: { jobId, status: 'BLOCKED_CAPTCHA', errorReason: '终审检测到人机验证，请人工通过' },
@@ -210,6 +268,7 @@ export default defineContentScript({
             return;
           }
           if (blocker === 'NOT_LOGGED_IN') {
+            isSynthesizing = false;
             send({
               type: 'SYNTHESIS_STATUS_CHANGE',
               payload: { jobId, status: 'BLOCKED_LOGIN', errorReason: '终审检测到未登录状态，请先登录 DeepSeek' },
@@ -217,81 +276,125 @@ export default defineContentScript({
             return;
           }
 
-          // 2. 复用当前会话作为多轮追加提炼（若前序回答仍在生成，等待其生成结束）
-          let waitAttempts = 0;
-          while (deepSeekAdapter.findStopButton() && waitAttempts < 40) {
-            await new Promise((r) => setTimeout(r, 500));
-            waitAttempts++;
+          // 2. 分轮依次提交：引导提示词 -> 逐个站点回复 -> “提交完成”
+          for (let i = 0; i < synthesisQueue.length; i++) {
+            if (myToken !== activeSynthesisToken) {
+              isSynthesizing = false;
+              return;
+            }
+            const step = synthesisQueue[i]!;
+
+            // 等待前序回答生成完毕（若停止生成按钮存在，等待其结束）
+            await waitUntilIdle();
+            if (myToken !== activeSynthesisToken) {
+              isSynthesizing = false;
+              return;
+            }
+
+            if (!step.isFinal) {
+              send({
+                type: 'SYNTHESIS_STATUS_CHANGE',
+                payload: { jobId, status: 'SENDING' },
+              });
+              send({
+                type: 'SYNTHESIS_STREAM_UPDATE',
+                payload: {
+                  jobId,
+                  snapshot: `⏳ 分轮送审进度 (${i + 1}/${synthesisQueue.length})：${step.label}...\n\n正在发送并等待 DeepSeek 接收完毕，完成后将自动继续下一轮。`,
+                  isFinished: false,
+                },
+              });
+            } else {
+              send({
+                type: 'SYNTHESIS_STATUS_CHANGE',
+                payload: { jobId, status: 'SENDING' },
+              });
+              send({
+                type: 'SYNTHESIS_STREAM_UPDATE',
+                payload: {
+                  jobId,
+                  snapshot: `⏳ 分轮送审进度 (${i + 1}/${synthesisQueue.length})：${step.label}...`,
+                  isFinished: false,
+                },
+              });
+            }
+
+            // 模拟写入并提交（在 DeepSeek 当前会话中多轮依次追加发送）
+            const sent = await deepSeekAdapter.sendPrompt(step.prompt);
+            if (!sent) {
+              isSynthesizing = false;
+              send({
+                type: 'SYNTHESIS_STATUS_CHANGE',
+                payload: { jobId, status: 'FAILED', errorReason: `终审第 ${i + 1} 轮（${step.label}）注入或点击发送失败` },
+              });
+              return;
+            }
+
+            // 校验提交状态
+            const validated = await deepSeekAdapter.validateSubmission();
+            if (!validated) {
+              isSynthesizing = false;
+              send({
+                type: 'SYNTHESIS_STATUS_CHANGE',
+                payload: { jobId, status: 'FAILED', errorReason: `终审第 ${i + 1} 轮（${step.label}）提交后页面无响应` },
+              });
+              return;
+            }
+
+            if (!step.isFinal) {
+              // 中间轮次：严格等待 DeepSeek 回复完毕后再提交下一轮
+              await waitForIntermediateTurnDone();
+              // 留出 1200ms 缓冲等待输入框与发送按钮稳定
+              await new Promise((r) => setTimeout(r, 1200));
+            } else {
+              // 最终轮次（“提交完成”）：切换为 STREAMING 并流式回传剥离思维链后的最终综合报告
+              send({
+                type: 'SYNTHESIS_STATUS_CHANGE',
+                payload: { jobId, status: 'STREAMING' },
+              });
+
+              if (stopListening) {
+                stopListening();
+                stopListening = null;
+              }
+
+              stopListening = deepSeekAdapter.listenGeneration(
+                (_rawSnapshot, cleaned) => {
+                  if (!cleaned) return;
+                  send({
+                    type: 'SYNTHESIS_STREAM_UPDATE',
+                    payload: {
+                      jobId,
+                      snapshot: cleaned,
+                      isFinished: false,
+                    },
+                  });
+                },
+                (finalCleaned) => {
+                  isSynthesizing = false;
+                  send({
+                    type: 'SYNTHESIS_STREAM_UPDATE',
+                    payload: {
+                      jobId,
+                      snapshot: finalCleaned,
+                      isFinished: true,
+                    },
+                  });
+
+                  send({
+                    type: 'SYNTHESIS_STATUS_CHANGE',
+                    payload: {
+                      jobId,
+                      status: 'DONE',
+                      finalMarkdown: finalCleaned,
+                    },
+                  });
+                }
+              );
+            }
           }
-
-          // 3. 标记状态为 SENDING
-          send({
-            type: 'SYNTHESIS_STATUS_CHANGE',
-            payload: { jobId, status: 'SENDING' },
-          });
-
-          // 4. 模拟写入并提交（在 DeepSeek 当前会话中发送其他模型的回答与终审指令）
-          const sent = await deepSeekAdapter.sendPrompt(metaPrompt);
-          if (!sent) {
-            send({
-              type: 'SYNTHESIS_STATUS_CHANGE',
-              payload: { jobId, status: 'FAILED', errorReason: '终审提示词注入或点击发送失败' },
-            });
-            return;
-          }
-
-          // 5. 校验提交状态
-          const validated = await deepSeekAdapter.validateSubmission();
-          if (!validated) {
-            send({
-              type: 'SYNTHESIS_STATUS_CHANGE',
-              payload: { jobId, status: 'FAILED', errorReason: '终审提交后页面无响应' },
-            });
-            return;
-          }
-
-        // 5. 标记为 STREAMING 并监听生成
-        send({
-          type: 'SYNTHESIS_STATUS_CHANGE',
-          payload: { jobId, status: 'STREAMING' },
-        });
-
-        if (stopListening) {
-          stopListening();
-        }
-
-        stopListening = deepSeekAdapter.listenGeneration(
-          (snapshot) => {
-            send({
-              type: 'SYNTHESIS_STREAM_UPDATE',
-              payload: {
-                jobId,
-                snapshot,
-                isFinished: false,
-              },
-            });
-          },
-          (finalCleaned) => {
-            send({
-              type: 'SYNTHESIS_STREAM_UPDATE',
-              payload: {
-                jobId,
-                snapshot: finalCleaned,
-                isFinished: true,
-              },
-            });
-
-            send({
-              type: 'SYNTHESIS_STATUS_CHANGE',
-              payload: {
-                jobId,
-                status: 'DONE',
-                finalMarkdown: finalCleaned,
-              },
-            });
-          }
-        );
         } catch (err) {
+          isSynthesizing = false;
           console.error('[DeepSeekContent] Synthesis dispatch error:', err);
           send({
             type: 'SYNTHESIS_STATUS_CHANGE',

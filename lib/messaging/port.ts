@@ -1,5 +1,6 @@
 import type { ProviderStatus, ReviewJob, SupportedSite } from '../types/review-job';
 import type { LogSource, LogLevel } from '../logger/flight-recorder';
+import type { SynthesisStep } from '../utils/synthesis-builder';
 
 export const SIDEPANEL_PORT_NAME = 'multi-ai-sidepanel-port';
 export const CONTENT_PORT_NAME = 'multi-ai-content-port';
@@ -106,6 +107,7 @@ export type PortMessage =
       payload: {
         jobId: string;
         metaPrompt: string;
+        steps?: SynthesisStep[];
       };
     }
   | {

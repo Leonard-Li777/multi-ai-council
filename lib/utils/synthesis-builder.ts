@@ -7,8 +7,111 @@ export interface SynthesisPromptResult {
   participatingCount: number;
 }
 
+export interface SynthesisStep {
+  id: string;
+  label: string;
+  prompt: string;
+  siteName?: SupportedSite;
+  isFinal?: boolean;
+}
+
+export interface SequentialSynthesisPlan extends SynthesisPromptResult {
+  steps: SynthesisStep[];
+}
+
+export const SEQUENTIAL_SYNTHESIS_PREAMBLE =
+  '请结合你和第三方Agent的合并，我会分几轮依次提交它们的回复，直到我说提交完成，你再根据他们的回复综合回复一个最佳结果';
+
+export const SEQUENTIAL_SYNTHESIS_FINAL_COMMIT = '提交完成';
+
 export const DEFAULT_SYNTHESIS_INSTRUCTION =
   '请结合你和他们的合并所有回复给出最终回答，不要漏掉任何不同观点，但可以给出你的建议；对于可能造成歧义的需要保留原观点原文，或解释清楚，避免你的模糊传达引起误解';
+
+/**
+ * 为 DeepSeek 当前会话构造分轮依次送审计划：
+ * 1. 第 1 轮先发送引导提示词，告知 DeepSeek 等待分轮接收直到“提交完成”
+ * 2. 中间 N 轮每次仅提交一个其他站点的回复（排除 DeepSeek 自身，规避单次输入字数上限）
+ * 3. 最后 1 轮发送“提交完成”，触发 DeepSeek 输出最终综合回复
+ */
+export function buildSequentialSynthesisSteps(
+  runs: ProviderRun[],
+  excludeSite: SupportedSite = 'DeepSeek',
+  preamble: string = SEQUENTIAL_SYNTHESIS_PREAMBLE,
+  finalCommit: string = SEQUENTIAL_SYNTHESIS_FINAL_COMMIT
+): SequentialSynthesisPlan {
+  const validRuns = runs.filter(
+    (r) =>
+      r.siteName !== excludeSite &&
+      (r.status === 'DONE' || r.status === 'PARTIAL') &&
+      ((r.cleanedResponse && r.cleanedResponse.trim().length > 0) ||
+        (r.responseSnapshot && r.responseSnapshot.trim().length > 0))
+  );
+
+  if (validRuns.length === 0) {
+    return {
+      steps: [],
+      metaPrompt: '',
+      anonymousMap: {},
+      participatingCount: 0,
+    };
+  }
+
+  const anonymousMap: Record<string, SupportedSite> = {};
+  const steps: SynthesisStep[] = [
+    {
+      id: 'preamble',
+      label: '发送分轮终审引导提示词',
+      prompt: preamble.trim(),
+      isFinal: false,
+    },
+  ];
+
+  const modelBlocks: string[] = [];
+
+  validRuns.forEach((run) => {
+    anonymousMap[run.siteName] = run.siteName;
+    const rawResponse = (run.cleanedResponse || run.responseSnapshot || '').trim();
+    const { cleaned } = stripThinkBlocks(rawResponse);
+    const body = cleaned.trim();
+    if (!body) return;
+
+    const block = `### 【${run.siteName} 的回答】\n\n${body}`;
+    modelBlocks.push(block);
+    steps.push({
+      id: `site-${run.siteName}`,
+      label: `提交 ${run.siteName} 的回复`,
+      siteName: run.siteName,
+      prompt: block,
+      isFinal: false,
+    });
+  });
+
+  // 如果剥离思考块后没有任何实质回复，直接返回空计划
+  if (modelBlocks.length === 0) {
+    return {
+      steps: [],
+      metaPrompt: '',
+      anonymousMap: {},
+      participatingCount: 0,
+    };
+  }
+
+  steps.push({
+    id: 'commit',
+    label: '发送「提交完成」并生成最终综合回答',
+    prompt: finalCommit.trim(),
+    isFinal: true,
+  });
+
+  const metaPrompt = `${preamble.trim()}\n\n${modelBlocks.join('\n\n---\n\n')}\n\n---\n\n${finalCommit.trim()}`;
+
+  return {
+    steps,
+    metaPrompt,
+    anonymousMap,
+    participatingCount: modelBlocks.length,
+  };
+}
 
 /**
  * 为 DeepSeek 当前会话构造追加提炼提示词：

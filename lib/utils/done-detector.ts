@@ -16,6 +16,7 @@ export interface DoneDetectorOptions {
   silenceThresholdMs?: number;
   hardSilenceThresholdMs?: number; // 幽灵停止按钮强制解除死锁的硬静默时长，默认 15000ms
   userPrompt?: string; // 可选传入用户发送的原始提示词，用于提示词回显与角色污染防伪拦截
+  allowShortReply?: boolean; // 允许短文本快速收敛（用于分轮送审的“已收到”等中间确认回合）
 }
 
 export class QuadSignalDoneDetector {
@@ -176,7 +177,7 @@ export class QuadSignalDoneDetector {
     // 核心防早熟门禁（防 15/23/42 字误裁决）：
     // 若当前字数极短（< 80字），且尚未真正经历过生成态，这必定是 TTFT 排队、骨架屏或思考慢，严禁短静默触发完成！
     const elapsedMs = Date.now() - this.startTime;
-    if (currentLen < 80 && !this.hasEverGenerated && elapsedMs < 60000) {
+    if (!this.options.allowShortReply && currentLen < 80 && !this.hasEverGenerated && elapsedMs < 60000) {
       if (this.silenceTimer) {
         window.clearTimeout(this.silenceTimer);
         this.silenceTimer = null;
@@ -191,7 +192,7 @@ export class QuadSignalDoneDetector {
       // 1. 正文极短 (<100字) 时，极可能是刚输出了标题或遇到模型流式间隙停顿，维持至少 15 秒静默，严防早熟早收敛
       // 2. 若用户/单测显式传入了 silenceThresholdMs 则优先遵从，否则默认至少 12 秒阶梯式静默
       let effectiveSilenceMs = this.options.silenceThresholdMs ?? 12000;
-      if (currentLen < 100) {
+      if (!this.options.allowShortReply && currentLen < 100) {
         effectiveSilenceMs = Math.max(effectiveSilenceMs, 15000);
       }
 
@@ -224,7 +225,7 @@ export class QuadSignalDoneDetector {
           (!stillGenerating || isHardSilent)
         ) {
           // 双重确认：极短内容 (<60字) 严禁在 30 秒内触发完成
-          if (latestContent.trim().length < 60 && Date.now() - this.startTime < 30000) {
+          if (!this.options.allowShortReply && latestContent.trim().length < 60 && Date.now() - this.startTime < 30000) {
             this.silenceTimer = null;
             return;
           }

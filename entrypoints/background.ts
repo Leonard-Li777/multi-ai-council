@@ -22,6 +22,8 @@ import {
 import {
   buildAnonymizedSynthesisPrompt,
   buildFollowUpSynthesisPrompt,
+  buildSequentialSynthesisSteps,
+  type SynthesisStep,
 } from '../lib/utils/synthesis-builder';
 import { calculateQuorumProgress } from '../lib/utils/quorum-calculator';
 import { flightRecorder } from '../lib/logger/flight-recorder';
@@ -62,7 +64,7 @@ export default defineBackground(() => {
   const siteTabs = new Map<SupportedSite, number>();
   let synthesisTabId: number | null = null;
   let synthesisPort: chrome.runtime.Port | null = null;
-  let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string } | null = null;
+  let pendingSynthesisMetaPrompt: { jobId: string; metaPrompt: string; steps?: SynthesisStep[] } | null = null;
 
   const SESSION_COUNCIL_GROUP_KEY = 'MULTI_AI_COUNCIL_GROUP_ID';
   let groupingMutex: Promise<number | null> | null = null;
@@ -1001,20 +1003,23 @@ export default defineBackground(() => {
     if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
 
     const runs = Object.values(job.providerRuns);
-    // 构造面向 DeepSeek 当前会话的追加提炼提示词（严格排除 DeepSeek 自身回复）
-    const { metaPrompt, anonymousMap, participatingCount } = buildFollowUpSynthesisPrompt(
+    // 构造面向 DeepSeek 当前会话的分轮依次送审计划（严格排除 DeepSeek 自身回复，防止单次粘贴超字数限制）
+    const { steps, metaPrompt, anonymousMap, participatingCount } = buildSequentialSynthesisSteps(
       runs,
       'DeepSeek'
     );
 
-    if (participatingCount === 0 || !metaPrompt) {
+    if (participatingCount === 0 || steps.length === 0) {
       console.warn('[Background] No other completed provider runs available for synthesis');
       return;
     }
 
-    console.log(`[Background] Triggering synthesis for Job ${jobId} with ${participatingCount} other models`);
+    console.log(
+      `[Background] Triggering sequential synthesis for Job ${jobId} with ${participatingCount} other models (${steps.length} turns)`
+    );
 
-    pendingSynthesisMetaPrompt = { jobId, metaPrompt };
+    const dispatchPayload = { jobId, metaPrompt, steps };
+    pendingSynthesisMetaPrompt = dispatchPayload;
 
     // 1. 优先查找 DeepSeek 当前会话已有标签页，绝不开启空白新标签页破坏当前会话上下文
     let targetTabId: number | null = siteTabs.get('DeepSeek') || job.providerRuns['DeepSeek']?.tabId || null;
@@ -1064,26 +1069,36 @@ export default defineBackground(() => {
       broadcastJobSync(updated);
     }
 
-    // 3. 立即下发终审提示词至 DeepSeek 当前会话
+    // 3. 立即下发分轮终审指令至 DeepSeek 当前会话（单通道防重派发）
     if (targetTabId) {
-      await ensureContentScriptReady(targetTabId, 'DeepSeek');
+      const ready = await ensureContentScriptReady(targetTabId, 'DeepSeek');
+      let dispatched = false;
       const port = contentPorts.get('DeepSeek');
       if (port) {
         try {
           port.postMessage({
             type: 'DISPATCH_SYNTHESIS_PROMPT',
-            payload: { jobId, metaPrompt },
+            payload: dispatchPayload,
           });
+          dispatched = true;
         } catch (e) {
           console.warn('[Background] Port postMessage DISPATCH_SYNTHESIS_PROMPT failed:', e);
         }
       }
-      chrome.tabs.sendMessage(targetTabId, {
-        type: 'DISPATCH_SYNTHESIS_PROMPT',
-        payload: { jobId, metaPrompt },
-      }).catch((err) => {
-        console.warn('[Background] sendMessage DISPATCH_SYNTHESIS_PROMPT failed:', err);
-      });
+      if (!dispatched && ready) {
+        try {
+          await chrome.tabs.sendMessage(targetTabId, {
+            type: 'DISPATCH_SYNTHESIS_PROMPT',
+            payload: dispatchPayload,
+          });
+          dispatched = true;
+        } catch (err) {
+          console.warn('[Background] sendMessage DISPATCH_SYNTHESIS_PROMPT failed:', err);
+        }
+      }
+      if (dispatched) {
+        pendingSynthesisMetaPrompt = null;
+      }
     }
   }
 });

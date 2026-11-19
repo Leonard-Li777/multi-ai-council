@@ -188,7 +188,8 @@ export class DeepSeekAdapter implements AISiteAdapter {
    */
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     // 找到消息列表容器或主聊天容器
     const chatContainer =
@@ -211,17 +212,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
         }
 
         // 核心防护：若提取的容器中含有深度思考思维链折叠块，克隆节点并彻底剔除，只保留正式回复
-        let targetEl = lastMsgEl;
-        const thinkNodes = targetEl.querySelectorAll(
-          'div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]'
-        );
-        if (thinkNodes.length > 0) {
-          const clone = targetEl.cloneNode(true) as HTMLElement;
-          clone
-            .querySelectorAll('div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]')
-            .forEach((n) => n.remove());
-          targetEl = clone;
-        }
+        const targetEl = this.cloneWithoutThinkingNodes(lastMsgEl);
 
         const md = domToMarkdown(targetEl);
         const result = (md && md.trim().length > 0) ? md : (targetEl.innerText || targetEl.textContent || '').trim();
@@ -243,7 +234,8 @@ export class DeepSeekAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
     });
 
     this.activeDetector.start(chatContainer);
@@ -280,12 +272,15 @@ export class DeepSeekAdapter implements AISiteAdapter {
     await this.sleep(300);
 
     const lastMsg = this.findLatestAssistantMessageElement();
-    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
-    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
-      const md = domToMarkdown(lastMsg);
-      const cleaned = (md && md.trim().length > 0) ? md : currentText;
-      onDone(cleaned);
-      return 'DONE';
+    if (lastMsg && lastMsg !== this.baselineLastElement && !this.findStopButton()) {
+      const cleanEl = this.cloneWithoutThinkingNodes(lastMsg);
+      const md = domToMarkdown(cleanEl);
+      const raw = (md && md.trim().length > 0) ? md : (cleanEl.innerText || cleanEl.textContent || '').trim();
+      const { cleaned } = stripThinkBlocks(raw);
+      if (cleaned.length > 15) {
+        onDone(cleaned);
+        return 'DONE';
+      }
     }
 
     if (this.findStopButton()) {
@@ -364,6 +359,83 @@ export class DeepSeekAdapter implements AISiteAdapter {
     );
   }
 
+  private isThinkingHeaderText(text: string): boolean {
+    const t = text.trim();
+    if (t.length === 0 || t.length > 60) return false;
+    return /^(已深度思考|深度思考|思考中|正在思考|思考过程|已思考|Thought for|Thinking)/i.test(t);
+  }
+
+  /**
+   * 判断一个 .ds-markdown 元素是否处于深度思考思维链折叠块内部（同时兼容显式类名与 CSS Module 混淆哈希类名）
+   */
+  private isInsideThinkingWrapper(el: HTMLElement, stopAncestor?: HTMLElement | null): boolean {
+    // 1. 显式思维链类名 / 属性
+    if (
+      el.closest(
+        'div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"], .ds-think-content, [data-type="think"]'
+      ) !== null
+    ) {
+      return true;
+    }
+
+    // 2. 向上检查直接包装父级（不超过轮次根节点）：若存在前置兄弟节点文本为“已深度思考/思考中/Thought for”标题，则本节点属于思维链正文
+    let cur: HTMLElement | null = el;
+    let depth = 0;
+    while (cur && cur !== stopAncestor && cur !== document.body && depth < 4) {
+      let prev = cur.previousElementSibling as HTMLElement | null;
+      while (prev) {
+        const prevText = (prev.innerText || prev.textContent || '').trim();
+        if (this.isThinkingHeaderText(prevText)) {
+          // 确认 prev 不是另一个正式回复，且 cur 所在父容器并非整个轮次容器（若父容器包含多个独立 .ds-markdown 则 cur 若紧跟思考标题且后面还有正式 .ds-markdown 才算思考体）
+          if (cur.parentElement !== stopAncestor) {
+            return true;
+          }
+          // 同一层级下，如果后面还有其他 .ds-markdown，则紧跟思考标题的这个就是思维链
+          let next = cur.nextElementSibling as HTMLElement | null;
+          while (next) {
+            if (next.matches('.ds-markdown, div[class*="ds-markdown"]') || next.querySelector('.ds-markdown, div[class*="ds-markdown"]')) {
+              return true;
+            }
+            next = next.nextElementSibling as HTMLElement | null;
+          }
+          // 即使后面暂无正式回复，只要本节点带有思考区常见语义属性或 aria-expanded 关联也视为思维链
+          if (prev.querySelector('svg') && cur.tagName === 'DIV' && !cur.classList.contains('ds-markdown--block')) {
+            return true;
+          }
+        }
+        prev = prev.previousElementSibling as HTMLElement | null;
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+
+    return false;
+  }
+
+  /**
+   * 克隆节点并彻底剔除其中所有思维链子容器（包含显式类名与混淆类名折叠块）
+   */
+  private cloneWithoutThinkingNodes(el: HTMLElement): HTMLElement {
+    const clone = el.cloneNode(true) as HTMLElement;
+    clone
+      .querySelectorAll(
+        'div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"], .ds-think-content, [data-type="think"]'
+      )
+      .forEach((n) => n.remove());
+
+    // 额外清理混淆类名的思维链折叠块：若某子节点以“已深度思考/思考中/Thought for”开头且并非正式回复根节点，则移除该子块
+    const children = Array.from(clone.children) as HTMLElement[];
+    for (const child of children) {
+      const firstLine = (child.innerText || child.textContent || '').trim().split('\n')[0]?.trim() || '';
+      if (this.isThinkingHeaderText(firstLine)) {
+        // 确保不会误删包含正式回复的外层容器：仅当该子块不代表全部正文或存在后续正式兄弟节点时移除
+        child.remove();
+      }
+    }
+
+    return clone;
+  }
+
   private findLatestAssistantMessageElement(): HTMLElement | null {
     // 1. 查找所有机器人轮次外层卡片（严格排除输入框）
     const turns = Array.from(
@@ -380,10 +452,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
       // 优先在当前轮次内部寻找非思维链的正式回复 markdown 容器
       const mdElements = Array.from(
         lastTurn.querySelectorAll<HTMLElement>('.ds-markdown, div[class*="ds-markdown"], div[class*="markdown-body"]')
-      ).filter((el) => {
-        const isThinking = el.closest('div[class*="think"], div[class*="thought"], div[class*="reasoning"], div[class*="collapse"]') !== null;
-        return !isThinking;
-      });
+      ).filter((el) => !this.isInsideThinkingWrapper(el, lastTurn));
 
       if (mdElements.length > 0) {
         return mdElements[mdElements.length - 1]!;
@@ -394,7 +463,7 @@ export class DeepSeekAdapter implements AISiteAdapter {
     // 2. 降级：全量查找所有非思维链折叠块的 .ds-markdown
     const allMarkdown = Array.from(
       document.querySelectorAll<HTMLElement>('.ds-markdown, div[class*="ds-markdown"]')
-    ).filter((el) => el.closest('div[class*="think"], div[class*="thought"], div[class*="reasoning"]') === null);
+    ).filter((el) => !this.isInsideThinkingWrapper(el));
 
     if (allMarkdown.length > 0) {
       return allMarkdown[allMarkdown.length - 1] ?? null;
