@@ -135,9 +135,22 @@ export function createAdapterBridge(options: AdapterBridgeOptions): AdapterBridg
           if (hasCompleted) return;
           const { cleaned: netCleaned } = stripThinkBlocks(accumulatedSnapshot);
           const isNetThinking = isThinkingOnly(accumulatedSnapshot) || isThinkingOnly(netCleaned);
-          // 关键防空与思考占位门禁：若网络层虽已 DONE 但提取的正文为空或纯为思考占位词，立即回退 DOM 守候真正回答
-          if (accumulatedSnapshot.trim().length === 0 || netCleaned.trim().length === 0 || isNetThinking) {
-            triggerFallbackOnce('network stream finished with empty or thinking placeholder content');
+          // 关键防空与思考占位/超短标题劫持门禁：
+          // 1. 网络层虽已 DONE 但提取的正文为空或纯为思考占位词 -> 回退 DOM 守候真正回答
+          // 2. 用户提交了长提示词 (>=200字) 而网络层仅返回 <50 字（如 DeepSeek 10 字自动标题流被误捕获）-> 回退 DOM 守候
+          const isSuspiciouslyShortForLongPrompt =
+            prompt.trim().length >= 200 && netCleaned.trim().length < 50;
+          if (
+            accumulatedSnapshot.trim().length === 0 ||
+            netCleaned.trim().length === 0 ||
+            isNetThinking ||
+            isSuspiciouslyShortForLongPrompt
+          ) {
+            triggerFallbackOnce(
+              isSuspiciouslyShortForLongPrompt
+                ? `network stream finished with suspiciously short content (${netCleaned.trim().length} chars)`
+                : 'network stream finished with empty or thinking placeholder content'
+            );
             return;
           }
 

@@ -178,10 +178,10 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
             <div className="text-center py-5 px-3 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
               <p>
                 {status === 'WAITING_READY' || status === 'SENDING'
-                  ? '正在向 DeepSeek 当前会话投递各 AI 回复数据进行全景汇总...'
+                  ? '正在向 DeepSeek 当前会话分轮投递各 AI 回复数据进行全景汇总...'
                   : status === 'STREAMING'
                   ? 'DeepSeek 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...'
-                  : '已自动排除 DeepSeek 自身回复；点击下方按钮将其他模型的回答合并发送至 DeepSeek 当前会话进行综合提炼。'}
+                  : '终审仅支持手动触发（不会自动发布）。请先核验各站点回复内容完整，确认无误后点击下方按钮手动分轮发送至 DeepSeek 当前会话汇总。'}
               </p>
               {status !== 'STREAMING' && canTriggerSynthesis && onTriggerSynthesis && (
                 <div className="pt-1">

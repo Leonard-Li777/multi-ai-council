@@ -186,8 +186,9 @@ export class DeepSeekStreamParser {
       if (this.activePhase === 'IGNORE') {
         return null;
       }
-      if (this.activePhase === 'UNKNOWN' && CONTROL_STATUS_VALUES.has(json.v.toUpperCase())) {
-        if (json.v.toUpperCase() === 'FINISHED') {
+      if (this.activePhase === 'UNKNOWN') {
+        // 关键防污染：在尚未明确进入 CONTENT 阶段前，任何孤立的 { v: "..." }（如 10 字会话自动标题）严禁当作正文！
+        if (CONTROL_STATUS_VALUES.has(json.v.toUpperCase()) && json.v.toUpperCase() === 'FINISHED') {
           return { kind: 'DONE', text: this.contentText, isDone: true };
         }
         return null;

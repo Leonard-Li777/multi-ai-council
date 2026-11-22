@@ -214,6 +214,15 @@ export class QuadSignalDoneDetector {
       if (!this.options.allowShortReply && currentLen < 100) {
         effectiveSilenceMs = Math.max(effectiveSilenceMs, 15000);
       }
+      // 长提示词场景防半途截断（如 Qwen 刚输出 134 字开场声明后停顿 13s 思考下一章）：
+      // 当用户输入长提示词 (>=500字) 而当前回复仍 <400 字时，拉长静默门禁至 30 秒，避免把开场声明误判为全量完成
+      if (
+        !this.options.allowShortReply &&
+        (this.options.userPrompt?.trim().length ?? 0) >= 500 &&
+        currentLen < 400
+      ) {
+        effectiveSilenceMs = Math.max(effectiveSilenceMs, 30000);
+      }
 
       this.silenceTimer = window.setTimeout(() => {
         const latestContent = this.options.getCurrentContent();

@@ -20,12 +20,14 @@ export class ChatGPTAdapter implements AISiteAdapter {
   private baselineArticleCount = 0;
   private lastPromptLength = 0;
   private didClickSend = false;
+  private highWaterMarkSnapshot = '';
 
   public recordBaseline(): void {
     const el = this.findLatestAssistantMessageElement();
     this.baselineLastElement = el;
     this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
     this.baselineArticleCount = document.querySelectorAll('article').length;
+    this.highWaterMarkSnapshot = '';
   }
 
   /**
@@ -396,7 +398,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
       getSendButton: () => this.findSendButton(),
       getCurrentContent: () => {
         const lastMsgEl = this.findLatestAssistantMessageElement();
-        if (!lastMsgEl) return '';
+        if (!lastMsgEl) return this.highWaterMarkSnapshot;
 
         if (lastMsgEl === this.baselineLastElement) {
           const currentText = (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
@@ -405,8 +407,24 @@ export class ChatGPTAdapter implements AISiteAdapter {
           }
         }
 
-        const md = domToMarkdown(lastMsgEl);
-        const result = (md && md.trim().length > 0) ? md : (lastMsgEl.innerText || lastMsgEl.textContent || '').trim();
+        // 克隆并清理内联图表 SVG 坐标轴、工具栏、复制按钮等非正文噪声
+        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+        clone
+          .querySelectorAll('svg, canvas, button, [role="toolbar"], [class*="toolbar"], [data-testid*="action"]')
+          .forEach((n) => n.remove());
+
+        const md = domToMarkdown(clone);
+        const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
+
+        // Anti-Shrink 高水位单调保护：彻底杜绝 ChatGPT 尾部渲染图表/卡片/虚拟化重排时，
+        // 将已捕获的 24,829 字长报告覆盖成 68 字图表坐标轴文字！
+        if (this.highWaterMarkSnapshot.length >= 200 && result.length < this.highWaterMarkSnapshot.length * 0.75) {
+          return this.highWaterMarkSnapshot;
+        }
+        if (result.length > this.highWaterMarkSnapshot.length) {
+          this.highWaterMarkSnapshot = result;
+        }
+
         this.currentSnapshot = result;
         return result;
       },
@@ -598,24 +616,6 @@ export class ChatGPTAdapter implements AISiteAdapter {
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
-    // 1. 查找所有包含 assistant 标记的明确容器
-    const assistantRoles = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        '[data-message-author-role="assistant"], [data-message-model-slug], div[class*="agent-turn"]'
-      )
-    );
-    if (assistantRoles.length > 0) {
-      const last = assistantRoles[assistantRoles.length - 1]!;
-      const md = last.querySelector<HTMLElement>(
-        '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
-      ) || last;
-      if ((md.textContent || '').trim().length > 0) {
-        return md;
-      }
-    }
-
-    // 2. 现代 ChatGPT 核心架构：所有聊天轮次均为 article 标签
-    // 严格通过用户编辑按钮 (Edit / 编辑) 或 user 角色排除用户提问卡片
     const isUserArticle = (art: HTMLElement): boolean => {
       if (art.getAttribute('data-message-author-role') === 'user') return true;
       if (art.querySelector('[data-message-author-role="user"]')) return true;
@@ -623,17 +623,35 @@ export class ChatGPTAdapter implements AISiteAdapter {
       return false;
     };
 
+    // 1. 现代 ChatGPT 核心架构：优先获取最新一轮完整的非用户 <article>（避免轮次内部拆分多个 markdown/图表子块时只命中尾部 68 字图表！）
     const articles = Array.from(document.querySelectorAll<HTMLElement>('article'));
     if (articles.length > 0) {
       const nonUserArticles = articles.filter((art) => !isUserArticle(art));
       if (nonUserArticles.length > 0) {
         const lastArt = nonUserArticles[nonUserArticles.length - 1]!;
-        const md = lastArt.querySelector<HTMLElement>(
-          '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
-        ) || lastArt;
-        if ((md.textContent || '').trim().length > 0) {
-          return md;
+        if ((lastArt.textContent || '').trim().length > 0) {
+          return lastArt;
         }
+      }
+    }
+
+    // 2. 查找所有包含 assistant 标记的明确容器（若处于同一 article 下则返回整个 article）
+    const assistantRoles = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[data-message-author-role="assistant"], [data-message-model-slug], div[class*="agent-turn"]'
+      )
+    );
+    if (assistantRoles.length > 0) {
+      const last = assistantRoles[assistantRoles.length - 1]!;
+      const outerArticle = last.closest<HTMLElement>('article');
+      if (outerArticle && !isUserArticle(outerArticle)) {
+        return outerArticle;
+      }
+      const md = last.querySelector<HTMLElement>(
+        '.markdown, [class*="markdown"], .prose, [class*="prose"], div[class*="text-message"], div.whitespace-pre-wrap'
+      ) || last;
+      if ((md.textContent || '').trim().length > 0) {
+        return md;
       }
     }
 

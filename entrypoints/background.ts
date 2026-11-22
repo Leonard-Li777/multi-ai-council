@@ -990,11 +990,8 @@ export default defineBackground(() => {
       activeWatchdogs.delete(jobId);
     }
 
-    if (job.synthesisRun && job.synthesisRun.status !== 'PENDING') return;
-
-    if (quorum.isAllSettled && quorum.completedCount >= quorum.minRequired) {
-      await triggerSynthesis(job.id);
-    }
+    // 严禁自动触发最终评审！终审只允许用户核验各站点回复内容完整后，手动点击触发
+    return;
   }
 
   async function triggerSynthesis(jobId: string) {

@@ -255,4 +255,14 @@ describe('AC4: DeepSeek R1 思考过程与正文管道分离解析', () => {
     expect(parser.getContentText()).toBe('正式回复1正式回复2');
     expect(parser.getReasoningText()).toBe('思考A思考B');
   });
+
+  it('在尚未进入 CONTENT 阶段前，严格忽略孤立的 {v: "10字标题"} 防止被会话标题流劫持提前收敛', () => {
+    const parser = new DeepSeekStreamParser();
+
+    const titleEvent = parser.parseEvent({
+      data: JSON.stringify({ v: '发布流水线v2.2审查' }),
+    });
+    expect(titleEvent).toBeNull();
+    expect(parser.getContentText()).toBe('');
+  });
 });

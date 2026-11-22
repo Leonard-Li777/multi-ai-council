@@ -277,4 +277,37 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     const ok = await chatGPTAdapter.validateSubmission();
     expect(ok).toBe(true);
   });
+
+  it('chatGPTAdapter preserves full report via high-water-mark and ignores trailing 68-char chart widget overwrite', () => {
+    document.body.innerHTML = '';
+    chatGPTAdapter.recordBaseline();
+
+    const longBody = '# Firefly AI Folder 发布流水线 v2.2 — 六维红队审查报告\n\n' + '详细架构剖析与风险推演结论。'.repeat(40);
+    document.body.innerHTML = `
+      <main>
+        <article data-message-author-role="assistant">
+          <div class="markdown prose"><p>${longBody}</p></div>
+        </article>
+      </main>
+    `;
+
+    const stopListener = chatGPTAdapter.listenGeneration(() => {}, () => {});
+    const detector = (chatGPTAdapter as any).activeDetector;
+    const firstSnap = detector.options.getCurrentContent();
+    expect(firstSnap.length).toBeGreaterThan(400);
+
+    // 模拟 ChatGPT 尾部渲染一个独立图表卡片导致 DOM 突然只露出 68 字坐标轴
+    document.body.innerHTML = `
+      <main>
+        <article data-message-author-role="assistant">
+          <div class="prose">0 2.5 5 7.5 10 架构合理性 Git/Submodule Actions触发 Release生命周期 R2一致性 操作与运维</div>
+        </article>
+      </main>
+    `;
+
+    const afterChartSnap = detector.options.getCurrentContent();
+    expect(afterChartSnap.length).toBe(firstSnap.length);
+    expect(afterChartSnap).toContain('Firefly AI Folder 发布流水线 v2.2');
+    stopListener();
+  });
 });
