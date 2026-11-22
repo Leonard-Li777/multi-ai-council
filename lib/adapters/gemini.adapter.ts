@@ -78,10 +78,16 @@ export class GeminiAdapter implements AISiteAdapter {
       return;
     }
 
-    // 1. 优先尝试专向选择器定位 Gemini "New Chat" 按钮 / 链接入口
-    let newChatBtn = document.querySelector<HTMLElement>(
-      'a[href="/app"], a[href="https://gemini.google.com/app"], [data-test-id="new-chat-button"], [data-testid="new-chat-button"], [data-test-id*="new-chat"], [data-testid*="new-chat"], side-nav-button[aria-label*="New chat" i], side-nav-button[aria-label*="新对话"], button[aria-label*="New chat" i], button[aria-label*="新对话"], button[aria-label*="新建对话"], button[aria-label*="发起新对话"]'
+    // 1. 优先尝试专向选择器定位 Gemini "New Chat" 按钮 / 链接入口（严格排除自定义 Gem 侧边栏项 gem-nav-list-item）
+    const isGemNavItem = (el: HTMLElement | null): boolean =>
+      !el || el.tagName.toLowerCase() === 'gem-nav-list-item' || el.closest('gem-nav-list-item') !== null;
+
+    const directCandidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'button[data-test-id="new-chat-button"], a[data-test-id="new-chat-button"], [data-test-id="new-chat-button"], [data-testid="new-chat-button"], side-nav-button[aria-label*="New chat" i], side-nav-button[aria-label*="新对话"], button[aria-label*="New chat" i], button[aria-label*="新对话"], button[aria-label*="新建对话"], button[aria-label*="发起新对话"], a[href="/app"], a[href="https://gemini.google.com/app"]'
+      )
     );
+    let newChatBtn: HTMLElement | null = directCandidates.find((el) => !isGemNavItem(el)) || null;
 
     // 2. 若专向选择器未命中，全量扫描 sidebar 及导航按钮候选
     if (!newChatBtn) {
@@ -91,6 +97,7 @@ export class GeminiAdapter implements AISiteAdapter {
         )
       );
       newChatBtn = allCandidates.find((el) => {
+        if (isGemNavItem(el)) return false;
         const isLogo = el.classList.contains('logo') || el.closest('[class*="logo"]') !== null;
         if (isLogo) return false;
         const text = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -225,6 +232,101 @@ export class GeminiAdapter implements AISiteAdapter {
     return true;
   }
 
+  /**
+   * 精准判断节点是否真正位于 Gemini 思维链区块内
+   * 关键防护：绝不使用宽泛的 `div[class*="thought"]` / `div[class*="thinking"]`，
+   * 因为新版 Gemini 正式回复的外层包裹容器类名常带有 `response-container-with-thoughts` / `has-thoughts`，
+   * 宽泛匹配会导致整条正式 `<message-content>` 被误杀为空（0 字符抓取）！
+   */
+  private isInsideGeminiThoughts(el: HTMLElement): boolean {
+    if (
+      el.closest(
+        'model-thoughts, thoughts-container, thinking-panel, [data-test-id="model-thoughts"], [data-test-id="thoughts-content"], [data-test-id="thought-block"], [data-test-id="thoughts-container"]'
+      ) !== null
+    ) {
+      return true;
+    }
+
+    // 向上检查祖先节点：只有当祖先本身是纯思考面板且不包含正式回复 <message-content> 以外的结构时，才判定为思考区
+    let cur: HTMLElement | null = el.parentElement;
+    let depth = 0;
+    while (cur && depth < 6) {
+      const tag = cur.tagName.toLowerCase();
+      if (tag === 'model-response' || tag === 'main' || tag === 'body') break;
+      const cls = (cur.className || '').toString().toLowerCase();
+      const isThoughtPanel =
+        cls.includes('thoughts-content') ||
+        cls.includes('thought-content') ||
+        cls.includes('thought-panel') ||
+        cls.includes('thoughts-container') ||
+        cls.includes('thinking-content') ||
+        cls.includes('thinking-panel') ||
+        cls.includes('thoughts-body');
+      if (isThoughtPanel) {
+        return true;
+      }
+      cur = cur.parentElement;
+      depth++;
+    }
+    return false;
+  }
+
+  /**
+   * 从克隆后的回复容器安全移除思维链与工具栏节点（保留正式回复内容）
+   */
+  private stripGeminiNoiseNodes(clone: HTMLElement): void {
+    // 1. 移除明确的思考自定义标签与精确思考面板
+    clone
+      .querySelectorAll(
+        'model-thoughts, thoughts-container, thinking-panel, [data-test-id="model-thoughts"], [data-test-id="thoughts-content"], [data-test-id="thought-block"], [data-test-id="thoughts-container"], [class*="thoughts-content"], [class*="thought-content"], [class*="thought-panel"], [class*="thinking-content"], [class*="thinking-panel"], [class*="thoughts-body"]'
+      )
+      .forEach((n) => n.remove());
+
+    // 2. 移除页脚、工具栏、操作按钮（保留正文）
+    clone
+      .querySelectorAll(
+        'div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]'
+      )
+      .forEach((n) => n.remove());
+  }
+
+  /**
+   * 从最新回复节点中安全提取干净的正式 Markdown 文本
+   */
+  private extractCleanResponseText(lastMsgEl: HTMLElement): string {
+    // 1. 优先提取所有非思考块内的 message-content 段落并合并
+    const msgContents = Array.from(lastMsgEl.querySelectorAll<HTMLElement>('message-content')).filter((el) => {
+      if (this.isInsideGeminiThoughts(el)) {
+        return false;
+      }
+      return (el.innerText || el.textContent || '').trim().length > 0;
+    });
+
+    if (msgContents.length > 0) {
+      return msgContents
+        .map((el) => {
+          const clone = el.cloneNode(true) as HTMLElement;
+          this.stripGeminiNoiseNodes(clone);
+          const md = domToMarkdown(clone);
+          return md && md.trim().length > 0 ? md : (clone.innerText || clone.textContent || '').trim();
+        })
+        .filter(Boolean)
+        .join('\n\n');
+    }
+
+    // 2. 若 lastMsgEl 本身就是 message-content 或无独立 message-content 标签，安全清理克隆后提取
+    const clone = lastMsgEl.cloneNode(true) as HTMLElement;
+    this.stripGeminiNoiseNodes(clone);
+    let result = (clone.innerText || clone.textContent || '').trim();
+    try {
+      const md = domToMarkdown(clone);
+      if (md && md.trim().length > 0) {
+        result = md;
+      }
+    } catch {}
+    return result;
+  }
+
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
     onDone: (finalCleaned: string) => void,
@@ -248,47 +350,7 @@ export class GeminiAdapter implements AISiteAdapter {
           }
         }
 
-        // 核心：从轮次或父级容器中提取全部非思考块的 message-content 段落，实现全量合并杜绝截断
-        const msgContents = Array.from(lastMsgEl.querySelectorAll<HTMLElement>('message-content')).filter((el) => {
-          if (el.closest('model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"]')) {
-            return false;
-          }
-          return (el.innerText || el.textContent || '').trim().length > 0;
-        });
-
-        let result = '';
-        if (msgContents.length > 0) {
-          // 将所有段落（含代码块、列表）逐段转换为 Markdown 并拼接
-          result = msgContents
-            .map((el) => {
-              const clone = el.cloneNode(true) as HTMLElement;
-              clone
-                .querySelectorAll(
-                  'model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"], button, [class*="footer"], [class*="toolbar"]'
-                )
-                .forEach((b) => b.remove());
-              const md = domToMarkdown(clone);
-              return (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
-            })
-            .filter(Boolean)
-            .join('\n\n');
-        } else {
-          // 若无独立 message-content 标签，清理 targetEl 后兜底提取
-          const clone = lastMsgEl.cloneNode(true) as HTMLElement;
-          clone
-            .querySelectorAll(
-              'model-thoughts, div[class*="thought"], div[class*="thinking"], [data-test-id*="thought"], div[class*="footer"], div[class*="toolbar"], div[class*="header"], [role="toolbar"], button, [class*="response-container-footer"]'
-            )
-            .forEach((n) => n.remove());
-          const targetEl = clone;
-          result = (targetEl.innerText || targetEl.textContent || '').trim();
-          try {
-            const md = domToMarkdown(targetEl);
-            if (md && md.trim().length > 0) {
-              result = md;
-            }
-          } catch {}
-        }
+        const result = this.extractCleanResponseText(lastMsgEl);
 
         // 核心防护：若当前内容完全属于思考块或少于 20 字符的模型名字/占位符（如 "Gemini 2.0 Flash"），返回空以令 Detector 保持守候
         const { cleaned } = stripThinkBlocks(result);
@@ -395,11 +457,9 @@ export class GeminiAdapter implements AISiteAdapter {
     await this.sleep(300);
 
     const lastMsg = this.findLatestAssistantMessageElement();
-    const currentText = lastMsg ? (lastMsg.innerText || lastMsg.textContent || '').trim() : '';
-    if (lastMsg && lastMsg !== this.baselineLastElement && currentText.length > 15 && !this.findStopButton()) {
-      const md = domToMarkdown(lastMsg);
-      const cleaned = (md && md.trim().length > 0) ? md : currentText;
-      onDone(cleaned);
+    const extracted = lastMsg ? stripThinkBlocks(this.extractCleanResponseText(lastMsg)).cleaned : '';
+    if (lastMsg && lastMsg !== this.baselineLastElement && extracted.length > 15 && !this.findStopButton()) {
+      onDone(extracted);
       return 'DONE';
     }
 

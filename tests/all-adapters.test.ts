@@ -380,4 +380,87 @@ describe('All 6 Supported Site Adapters & Registry Conformance', () => {
     expect(content).not.toContain('联网搜索结果');
     stopListener();
   });
+
+  it('chatGPTAdapter never clicks Chinese/English voice or dictate buttons as send button', () => {
+    document.body.innerHTML = `
+      <form>
+        <div id="prompt-textarea" contenteditable="true"><p>Hello</p></div>
+        <button type="button" aria-label="上传附件"><svg></svg></button>
+        <button type="button" aria-label="听写"><svg></svg></button>
+        <button type="button" aria-label="启动语音模式"><svg></svg></button>
+      </form>
+    `;
+
+    // 当只有语音/听写/附件按钮而没有真正发送按钮时，findSendButton 必须返回 null，严禁误点语音按钮
+    expect((chatGPTAdapter as any).findSendButton()).toBeNull();
+
+    // 当真正发送按钮出现时，必须精准命中发送按钮
+    const form = document.querySelector('form')!;
+    const realSend = document.createElement('button');
+    realSend.setAttribute('data-testid', 'send-button');
+    realSend.setAttribute('aria-label', '发送提示词');
+    realSend.innerHTML = '<svg></svg>';
+    form.appendChild(realSend);
+
+    expect((chatGPTAdapter as any).findSendButton()).toBe(realSend);
+  });
+
+  it('geminiAdapter extracts formal message-content even when outer wrapper class contains thoughts', () => {
+    document.body.innerHTML = '';
+    geminiAdapter.recordBaseline();
+
+    document.body.innerHTML = `
+      <main>
+        <model-response>
+          <div class="response-container response-container-with-thoughts">
+            <model-thoughts>
+              <div class="thoughts-content">
+                <message-content>这是内部思考过程，必须被严格剔除。</message-content>
+              </div>
+            </model-thoughts>
+            <div class="response-container-content">
+              <message-content>
+                <h2>一、总体裁决与穷尽声明</h2>
+                <p>这是 Gemini 正式回复正文，外层容器虽然带有 with-thoughts 类名，但绝不能被误杀过滤！</p>
+              </message-content>
+            </div>
+          </div>
+        </model-response>
+      </main>
+    `;
+
+    const stopListener = geminiAdapter.listenGeneration(() => {}, () => {});
+    const detector = (geminiAdapter as any).activeDetector;
+    const content = detector.options.getCurrentContent();
+
+    expect(content).toContain('一、总体裁决与穷尽声明');
+    expect(content).toContain('这是 Gemini 正式回复正文');
+    expect(content).not.toContain('这是内部思考过程');
+    stopListener();
+  });
+
+  it('geminiAdapter createNewChat skips gem-nav-list-item and clicks real new-chat button', async () => {
+    document.body.innerHTML = `
+      <aside>
+        <gem-nav-list-item data-test-id="new-chat-gem" id="wrong-gem">新建对话 Gem</gem-nav-list-item>
+        <button data-test-id="new-chat-button" id="real-new-chat">发起新对话</button>
+      </aside>
+      <main>
+        <model-response><message-content>已有历史消息</message-content></model-response>
+      </main>
+    `;
+
+    let wrongClicked = false;
+    let rightClicked = false;
+    document.getElementById('wrong-gem')!.addEventListener('click', () => {
+      wrongClicked = true;
+    });
+    document.getElementById('real-new-chat')!.addEventListener('click', () => {
+      rightClicked = true;
+    });
+
+    await geminiAdapter.createNewChat();
+    expect(wrongClicked).toBe(false);
+    expect(rightClicked).toBe(true);
+  });
 });

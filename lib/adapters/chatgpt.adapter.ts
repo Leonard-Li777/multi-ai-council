@@ -181,43 +181,72 @@ export class ChatGPTAdapter implements AISiteAdapter {
     this.didClickSend = false;
 
     // 2. 模拟写入 ProseMirror 富文本或标准 textarea
+    input.click();
     input.focus();
     let injected = false;
     try {
       injected = await simulateTextInput(input, prompt);
     } catch {}
 
+    // 辅助函数：读取输入框当前文本
+    const readInputText = (el: HTMLElement): string =>
+      el instanceof HTMLTextAreaElement ? el.value : (el.innerText || el.textContent || '');
+
     // 若模拟写入未生效或为空，根据元素类型分别执行严格注入保底
-    const currentVal = input instanceof HTMLTextAreaElement ? input.value : (input.textContent || '');
+    let currentVal = readInputText(input);
     if (!injected || currentVal.trim().length === 0) {
       if (input instanceof HTMLTextAreaElement) {
-        input.value = prompt;
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        if (valueSetter) {
+          valueSetter.call(input, prompt);
+        } else {
+          input.value = prompt;
+        }
         input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
         input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
         input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else {
-        let p = input.querySelector('p');
-        if (!p) {
-          p = document.createElement('p');
-          input.innerHTML = '';
-          input.appendChild(p);
+        // 先尝试触发 ProseMirror 原生 paste 通道（对超长文本与后台标签页最可靠）
+        try {
+          const dt = new DataTransfer();
+          dt.setData('text/plain', prompt);
+          input.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, composed: true, clipboardData: dt }));
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        } catch {}
+
+        currentVal = readInputText(input);
+        if (currentVal.trim().length === 0) {
+          let p = input.querySelector('p');
+          if (!p) {
+            p = document.createElement('p');
+            input.innerHTML = '';
+            input.appendChild(p);
+          }
+          p.textContent = prompt;
+          input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
+          input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, composed: true, data: prompt }));
+          input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         }
-        p.textContent = prompt;
-        input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
-        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
-        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       }
       injected = true;
-      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_FALLBACK_TREE', { promptLength: prompt.length });
+      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_FALLBACK_TREE', {
+        promptLength: prompt.length,
+        actualLength: readInputText(input).trim().length,
+      });
     } else {
-      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_SUCCESS', { promptLength: prompt.length });
+      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_SUCCESS', {
+        promptLength: prompt.length,
+        actualLength: currentVal.trim().length,
+      });
     }
 
-    await this.sleep(300);
+    await this.sleep(350);
 
-    // 3. 轮询等待 React/ProseMirror 渲染并解禁发送按钮 (最多 3 秒)
+    // 3. 轮询等待 React/ProseMirror 渲染并解禁真正的发送按钮 (最多 3 秒)
+    // 严禁在发送按钮未出现时误点右下角的语音输入/听写按钮！
     let submitted = false;
     for (let attempt = 0; attempt < 15; attempt++) {
       await this.sleep(200);
@@ -237,11 +266,15 @@ export class ChatGPTAdapter implements AISiteAdapter {
           sendBtn.click();
           submitted = true;
           this.didClickSend = true;
-          flightRecorder.info('ChatGPT', 'SEND_BUTTON_CLICKED', { attempt });
+          flightRecorder.info('ChatGPT', 'SEND_BUTTON_CLICKED', {
+            attempt,
+            testid: sendBtn.getAttribute('data-testid') || '',
+            aria: sendBtn.getAttribute('aria-label') || '',
+          });
           await this.sleep(800);
           break;
-        } else if (attempt >= 5) {
-          // 若 1s 后依然 aria-disabled，强行解除限制并触发点击
+        } else if (attempt >= 8) {
+          // 仅对明确识别的发送按钮在 1.6s 后仍 disabled 时解除限制并点击
           sendBtn.removeAttribute('disabled');
           sendBtn.setAttribute('aria-disabled', 'false');
           sendBtn.click();
@@ -251,6 +284,11 @@ export class ChatGPTAdapter implements AISiteAdapter {
           await this.sleep(800);
           break;
         }
+      } else if (attempt === 4 || attempt === 9) {
+        // 若仍未渲染出真正的发送按钮（可能 ProseMirror 未同步 React 状态），补发 input 事件唤醒
+        input.focus();
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: '' }));
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       }
     }
 
@@ -559,37 +597,101 @@ export class ChatGPTAdapter implements AISiteAdapter {
     return null;
   }
 
-  private findSendButton(): HTMLElement | null {
-    const direct = (
-      document.querySelector<HTMLElement>('button[data-testid="send-button"]') ||
-      document.querySelector<HTMLElement>('button[data-testid="fruitjuice-send-button"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Send prompt"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="Send message"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送提示词"]') ||
-      document.querySelector<HTMLElement>('button[aria-label*="发送消息"]') ||
-      document.querySelector<HTMLElement>('button[aria-label="发送"]')
-    );
-    if (direct) return direct;
+  private isNonSendButton(b: HTMLElement): boolean {
+    const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+    const title = (b.getAttribute('title') || '').toLowerCase();
+    const testid = (b.getAttribute('data-testid') || '').toLowerCase();
+    const text = (b.innerText || b.textContent || '').trim().toLowerCase();
+    const combined = `${aria} ${title} ${testid} ${text}`;
 
-    // 向上从输入框的父级表单中寻找操作按钮
+    // 严格黑名单：杜绝误点 ChatGPT 语音模式、听写/麦克风、附件、搜索、深度研究、停止等非发送按钮
+    const forbiddenKeywords = [
+      'voice',
+      'speech',
+      'dictate',
+      'mic',
+      'audio',
+      'live',
+      'attach',
+      'upload',
+      'file',
+      'search',
+      'reason',
+      'research',
+      'tool',
+      'plus',
+      'composer-plus',
+      'menu',
+      'model',
+      'stop',
+      'cancel',
+      'close',
+      'record',
+      'listen',
+      '语音',
+      '听写',
+      '麦克风',
+      '通话',
+      '朗读',
+      '录音',
+      '附件',
+      '上传',
+      '文件',
+      '搜索',
+      '联网',
+      '推理',
+      '深度研究',
+      '工具',
+      '添加',
+      '菜单',
+      '模型',
+      '停止',
+      '取消',
+      '关闭',
+    ];
+    return forbiddenKeywords.some((kw) => combined.includes(kw));
+  }
+
+  private findSendButton(): HTMLElement | null {
+    const directSelectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'button[aria-label*="Send prompt" i]',
+      'button[aria-label*="Send message" i]',
+      'button[aria-label="Send" i]',
+      'button[aria-label*="发送提示词"]',
+      'button[aria-label*="发送消息"]',
+      'button[aria-label="发送"]',
+    ];
+    for (const sel of directSelectors) {
+      const btn = document.querySelector<HTMLElement>(sel);
+      if (btn && !this.isNonSendButton(btn)) {
+        return btn;
+      }
+    }
+
+    // 向上从输入框的父级表单中寻找明确具备发送语义的操作按钮
+    // 严禁盲目点击“表单最后一个带 svg 的按钮”，因为输入框为空或未同步时右下角就是语音输入按钮！
     const input = this.findInputElement();
     const form = input?.closest('form');
     if (form) {
       const candidates = Array.from(form.querySelectorAll<HTMLElement>('button'));
       const sendCandidate = candidates.reverse().find((b) => {
+        if (this.isNonSendButton(b)) return false;
+
+        const type = (b.getAttribute('type') || '').toLowerCase();
         const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+        const title = (b.getAttribute('title') || '').toLowerCase();
         const testid = (b.getAttribute('data-testid') || '').toLowerCase();
-        if (
-          aria.includes('attach') ||
-          aria.includes('voice') ||
-          aria.includes('upload') ||
-          aria.includes('mic') ||
-          testid.includes('voice') ||
-          testid.includes('speech')
-        ) {
-          return false;
-        }
-        return b.querySelector('svg') !== null;
+        const combined = `${aria} ${title} ${testid}`;
+
+        return (
+          type === 'submit' ||
+          combined.includes('send') ||
+          combined.includes('submit') ||
+          combined.includes('发送') ||
+          combined.includes('提交')
+        );
       });
       if (sendCandidate) return sendCandidate;
     }

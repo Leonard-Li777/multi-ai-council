@@ -79,4 +79,24 @@ describe('AutoScroller 通用回复内容区自动滚动工具', () => {
     expect(scrollReplyContainerToBottom(main)).toBe(true);
     expect(scroller.scrollTop).toBe(2400);
   });
+
+  it('能定位无 scroll 语义类名的混淆类名/Tailwind 回复区容器并滚动到底部（兼容 DeepSeek/ChatGPT/Qwen）', () => {
+    document.body.innerHTML = `
+      <div id="root">
+        <div class="_2be88ba" style="overflow-y: auto;">
+          <div class="msg-item">回复内容...</div>
+        </div>
+      </div>
+    `;
+
+    const obfScroller = document.querySelector<HTMLElement>('._2be88ba')!;
+    mockScrollMetrics(obfScroller, { scrollHeight: 4800, clientHeight: 720, clientWidth: 960, scrollTop: 200 });
+
+    const found = findReplyScrollContainer(document.body);
+    expect(found).toBe(obfScroller);
+
+    const didScroll = scrollReplyContainerToBottom(document.body);
+    expect(didScroll).toBe(true);
+    expect(obfScroller.scrollTop).toBe(4800);
+  });
 });

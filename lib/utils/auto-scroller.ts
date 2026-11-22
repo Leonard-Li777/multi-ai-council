@@ -7,8 +7,9 @@
 const EXCLUDED_ANCESTOR_SELECTOR =
   'nav, aside, form, textarea, pre, code, [contenteditable="true"], [class*="sidebar"], [class*="side-nav"], [class*="sidenav"], [class*="history-list"], [class*="conversation-list"]';
 
-const SCROLL_CANDIDATE_SELECTOR =
-  'infinite-scroller, main, [class*="scroll"], [class*="chat-container"], [class*="message-list"], [class*="chat-history"], [class*="conversation"], [class*="overflow-y"], [style*="overflow"]';
+// 覆盖所有现代聊天站点的潜在滚动容器标签，彻底摆脱对特定 CSS 类名的依赖
+// （先通过 scrollHeight > clientHeight + 20 做 O(1) 几何剪枝，仅对极少数真正溢出的节点调用 getComputedStyle）
+const CONTAINER_TAG_SELECTOR = 'infinite-scroller, main, section, article, div';
 
 function isExcludedElement(el: HTMLElement): boolean {
   const tag = el.tagName?.toLowerCase() || '';
@@ -25,7 +26,17 @@ function isExcludedElement(el: HTMLElement): boolean {
   ) {
     return true;
   }
-  return el.closest(EXCLUDED_ANCESTOR_SELECTOR) !== null;
+  if (el.closest(EXCLUDED_ANCESTOR_SELECTOR) !== null) {
+    return true;
+  }
+  // 在真实浏览器环境下，排除宽度过窄的侧边栏/抽屉容器（不影响 happy-dom 等无布局测试环境）
+  if (typeof window !== 'undefined' && window.innerWidth > 480 && typeof el.getBoundingClientRect === 'function') {
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.width < window.innerWidth * 0.3) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isScrollableElement(el: HTMLElement): boolean {
@@ -56,6 +67,20 @@ function isScrollableElement(el: HTMLElement): boolean {
   }
 }
 
+function collectScrollableCandidates(scope: HTMLElement, candidates: Set<HTMLElement>): void {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return;
+  const nodes = scope.querySelectorAll<HTMLElement>(CONTAINER_TAG_SELECTOR);
+  for (let i = 0; i < nodes.length; i++) {
+    const el = nodes[i]!;
+    // 快速几何剪枝：绝大部分 div 没有垂直溢出，直接跳过，避免无谓的 getComputedStyle 与 closest 开销
+    if ((el.scrollHeight || 0) <= (el.clientHeight || 0) + 20) continue;
+    if ((el.clientHeight || 0) > 0 && (el.clientHeight || 0) < 120) continue;
+    if (!isExcludedElement(el) && isScrollableElement(el)) {
+      candidates.add(el);
+    }
+  }
+}
+
 /**
  * 智能定位当前站点最主要的回复内容区滚动容器
  */
@@ -65,10 +90,10 @@ export function findReplyScrollContainer(root?: HTMLElement | null): HTMLElement
   const candidates = new Set<HTMLElement>();
   const baseRoot = root && root !== document.body ? root : document.querySelector<HTMLElement>('main') || document.body;
 
-  // 1. 检查 root 自身及其向上祖先链路（处理外层 wrapper 滚动的站点）
+  // 1. 检查 root 自身及其向上祖先链路（处理外层 wrapper 滚动的站点，如 ChatGPT / Claude / Qwen 外层滚动区）
   let cur: HTMLElement | null = baseRoot;
   let depth = 0;
-  while (cur && cur !== document.documentElement && depth < 8) {
+  while (cur && cur !== document.documentElement && depth < 10) {
     if (!isExcludedElement(cur) && isScrollableElement(cur)) {
       candidates.add(cur);
     }
@@ -76,17 +101,17 @@ export function findReplyScrollContainer(root?: HTMLElement | null): HTMLElement
     depth++;
   }
 
-  // 2. 检查 root 内部的常见滚动容器（处理内部消息列表滚动的站点，如 ChatGPT / Qwen / Gemini / DeepSeek）
-  if (baseRoot && typeof baseRoot.querySelectorAll === 'function') {
-    const inner = Array.from(baseRoot.querySelectorAll<HTMLElement>(SCROLL_CANDIDATE_SELECTOR));
-    for (const el of inner) {
-      if (!isExcludedElement(el) && isScrollableElement(el)) {
-        candidates.add(el);
-      }
-    }
+  // 2. 全量几何扫描 baseRoot 内部真正可滚动的容器（彻底摆脱对 CSS 类名的依赖，兼容 DeepSeek/Qwen/ChatGPT 混淆类名与 Tailwind）
+  if (baseRoot) {
+    collectScrollableCandidates(baseRoot, candidates);
   }
 
-  // 3. 在候选中挑选最具代表性的主对话滚动区（按可视面积与可滚动高度综合排序）
+  // 3. 若 baseRoot（如 main）内未找到，扩大至 document.body 兜底扫描（兼容主聊天区不在 <main> 内的站点）
+  if (candidates.size === 0 && document.body && baseRoot !== document.body) {
+    collectScrollableCandidates(document.body, candidates);
+  }
+
+  // 4. 在候选中挑选最具代表性的主对话滚动区（按可视面积与可滚动高度综合排序）
   if (candidates.size > 0) {
     let best: HTMLElement | null = null;
     let bestScore = -1;
@@ -104,7 +129,7 @@ export function findReplyScrollContainer(root?: HTMLElement | null): HTMLElement
     if (best) return best;
   }
 
-  // 4. 兜底：若页面本身为整页滚动，返回 document.scrollingElement
+  // 5. 兜底：若页面本身为整页滚动，返回 document.scrollingElement
   const docScroller = (document.scrollingElement || document.documentElement) as HTMLElement | null;
   if (docScroller && isScrollableElement(docScroller)) {
     return docScroller;
@@ -113,40 +138,55 @@ export function findReplyScrollContainer(root?: HTMLElement | null): HTMLElement
   return null;
 }
 
+function forceScrollElementToBottom(container: HTMLElement): boolean {
+  const maxScrollTop = Math.max(0, (container.scrollHeight || 0) - (container.clientHeight || 0));
+  const distanceFromBottom = maxScrollTop - (container.scrollTop || 0);
+
+  // 已经贴底时无需重复触发，避免无谓重绘
+  if (distanceFromBottom <= 16) {
+    return false;
+  }
+
+  container.scrollTop = container.scrollHeight;
+  if (typeof container.scrollTo === 'function') {
+    try {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
+    } catch {
+      // 某些测试环境或旧容器不支持 ScrollToOptions，已通过 scrollTop 赋值兜底
+    }
+  }
+
+  // 主动派发 scroll 事件，唤醒依赖 scroll 监听或 IntersectionObserver 的虚拟列表框架
+  try {
+    container.dispatchEvent(new Event('scroll', { bubbles: false }));
+  } catch {
+    // ignore
+  }
+
+  return true;
+}
+
 /**
  * 将回复内容区平滑或直接滚动至底部，并主动派发 scroll 事件唤醒虚拟列表/懒渲染
  * @returns 是否实际执行了向下滚动
  */
 export function scrollReplyContainerToBottom(root?: HTMLElement | null): boolean {
   try {
+    let scrolled = false;
     const container = findReplyScrollContainer(root);
-    if (!container) return false;
-
-    const maxScrollTop = Math.max(0, (container.scrollHeight || 0) - (container.clientHeight || 0));
-    const distanceFromBottom = maxScrollTop - (container.scrollTop || 0);
-
-    // 已经贴底时无需重复触发，避免无谓重绘
-    if (distanceFromBottom <= 16) {
-      return false;
+    if (container) {
+      scrolled = forceScrollElementToBottom(container);
     }
 
-    container.scrollTop = container.scrollHeight;
-    if (typeof container.scrollTo === 'function') {
-      try {
-        container.scrollTo({ top: container.scrollHeight, behavior: 'auto' });
-      } catch {
-        // 某些测试环境或旧容器不支持 ScrollToOptions，已通过 scrollTop 赋值兜底
+    // 若整页滚动条也存在未贴底的溢出（例如部分站点同时有外层窗口滚动），一并拉到底部
+    const docScroller = (document.scrollingElement || document.documentElement) as HTMLElement | null;
+    if (docScroller && docScroller !== container && isScrollableElement(docScroller)) {
+      if (forceScrollElementToBottom(docScroller)) {
+        scrolled = true;
       }
     }
 
-    // 主动派发 scroll 事件，唤醒依赖 scroll 监听或 IntersectionObserver 的虚拟列表框架
-    try {
-      container.dispatchEvent(new Event('scroll', { bubbles: false }));
-    } catch {
-      // ignore
-    }
-
-    return true;
+    return scrolled;
   } catch {
     return false;
   }
