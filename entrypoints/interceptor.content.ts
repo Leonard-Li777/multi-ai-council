@@ -15,7 +15,6 @@ export default defineContentScript({
     'https://yiyan.baidu.com/*',
     'https://wenxin.baidu.com/*',
     'https://gemini.google.com/*',
-    'https://chatglm.cn/*',
   ],
   world: 'MAIN',
   runAt: 'document_start',

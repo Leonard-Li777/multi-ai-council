@@ -35,7 +35,6 @@ const SITE_QUERY_PATTERNS: Record<SupportedSite, string[]> = {
   Gemini: ['https://gemini.google.com/*'],
   Qwen: ['https://chat.qwen.ai/*'],
   Wenxin: ['https://yiyan.baidu.com/*', 'https://wenxin.baidu.com/*'],
-  ChatGLM: ['https://chatglm.cn/*'],
 };
 
 const SITE_CONTENT_SCRIPTS: Record<SupportedSite, string> = {
@@ -45,7 +44,6 @@ const SITE_CONTENT_SCRIPTS: Record<SupportedSite, string> = {
   Gemini: 'content-scripts/gemini.js',
   Qwen: 'content-scripts/qwen.js',
   Wenxin: 'content-scripts/wenxin.js',
-  ChatGLM: 'content-scripts/chatglm.js',
 };
 
 export default defineBackground(() => {
@@ -510,8 +508,18 @@ export default defineBackground(() => {
         broadcastJobSync(updated);
         await checkAutoTriggerSynthesis(activeJob.id);
       }
+    } else if (msg.type === 'SET_JUDGE_SITE') {
+      const activeJob = await getActiveJob();
+      if (activeJob && (!msg.payload.jobId || activeJob.id === msg.payload.jobId)) {
+        activeJob.aggregationPolicy = {
+          ...activeJob.aggregationPolicy,
+          judgeProvider: msg.payload.judgeSite,
+        };
+        await saveActiveJob(activeJob);
+        broadcastJobSync(activeJob);
+      }
     } else if (msg.type === 'TRIGGER_SYNTHESIS') {
-      await triggerSynthesis(msg.payload.jobId);
+      await triggerSynthesis(msg.payload.jobId, msg.payload.judgeSite);
     } else if (msg.type === 'FAST_FORWARD_QUORUM') {
       const activeJob = await getActiveJob();
       if (activeJob && activeJob.id === msg.payload.jobId) {
@@ -994,48 +1002,54 @@ export default defineBackground(() => {
     return;
   }
 
-  async function triggerSynthesis(jobId: string) {
+  async function triggerSynthesis(jobId: string, overrideJudgeSite?: SupportedSite) {
     const job = await getActiveJob();
     if (!job || job.id !== jobId) return;
     if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
 
+    // 确定本次终审站点：优先采用显式传入 -> 任务配置 -> 全局存储 -> 默认 DeepSeek
+    let judgeSite: SupportedSite = overrideJudgeSite || job.aggregationPolicy?.judgeProvider || 'DeepSeek';
+    if (!SITE_QUERY_PATTERNS[judgeSite]) {
+      judgeSite = 'DeepSeek';
+    }
+
     const runs = Object.values(job.providerRuns);
-    // 构造面向 DeepSeek 当前会话的分轮依次送审计划（严格排除 DeepSeek 自身回复，防止单次粘贴超字数限制）
+    // 构造面向所选终审站点当前会话的分轮依次送审计划（严格排除该站点自身回复，防止单次粘贴超字数限制）
     const { steps, metaPrompt, anonymousMap, participatingCount } = buildSequentialSynthesisSteps(
       runs,
-      'DeepSeek'
+      judgeSite
     );
 
     if (participatingCount === 0 || steps.length === 0) {
-      console.warn('[Background] No other completed provider runs available for synthesis');
+      console.warn(`[Background] No other completed provider runs available for synthesis on ${judgeSite}`);
       return;
     }
 
     console.log(
-      `[Background] Triggering sequential synthesis for Job ${jobId} with ${participatingCount} other models (${steps.length} turns)`
+      `[Background] Triggering sequential synthesis on ${judgeSite} for Job ${jobId} with ${participatingCount} other models (${steps.length} turns)`
     );
 
     const dispatchPayload = { jobId, metaPrompt, steps };
     pendingSynthesisMetaPrompt = dispatchPayload;
 
-    // 1. 优先查找 DeepSeek 当前会话已有标签页，绝不开启空白新标签页破坏当前会话上下文
-    let targetTabId: number | null = siteTabs.get('DeepSeek') || job.providerRuns['DeepSeek']?.tabId || null;
+    // 1. 优先查找终审站点当前会话已有标签页，绝不开启空白新标签页破坏当前会话上下文
+    let targetTabId: number | null = siteTabs.get(judgeSite) || job.providerRuns[judgeSite]?.tabId || null;
     if (!targetTabId) {
-      const queryPatterns = SITE_QUERY_PATTERNS['DeepSeek'] || ['https://chat.deepseek.com/*'];
+      const queryPatterns = SITE_QUERY_PATTERNS[judgeSite];
       try {
         const tabs = await chrome.tabs.query({ url: queryPatterns });
         if (tabs.length > 0 && tabs[0]?.id) {
           targetTabId = tabs[0].id;
-          siteTabs.set('DeepSeek', targetTabId);
+          siteTabs.set(judgeSite, targetTabId);
         }
       } catch (e) {
-        console.warn('[Background] Query DeepSeek tab error:', e);
+        console.warn(`[Background] Query ${judgeSite} tab error:`, e);
       }
     }
 
-    // 2. 若 DeepSeek 标签页意外被关闭，以已保存的当前会话远程链接重新打开
+    // 2. 若终审站点标签页意外被关闭，以已保存的当前会话远程链接重新打开
     if (!targetTabId) {
-      const convUrl = job.providerRuns['DeepSeek']?.conversationRef?.conversationUrl || 'https://chat.deepseek.com/';
+      const convUrl = job.providerRuns[judgeSite]?.conversationRef?.conversationUrl || SITE_BASE_URLS[judgeSite];
       try {
         const newTab = await chrome.tabs.create({
           url: convUrl,
@@ -1043,11 +1057,11 @@ export default defineBackground(() => {
         });
         if (newTab?.id) {
           targetTabId = newTab.id;
-          siteTabs.set('DeepSeek', targetTabId);
+          siteTabs.set(judgeSite, targetTabId);
           await ensureTabInCouncilGroup(targetTabId);
         }
       } catch (e) {
-        console.warn('[Background] Failed to recreate DeepSeek tab for synthesis:', e);
+        console.warn(`[Background] Failed to recreate ${judgeSite} tab for synthesis:`, e);
       }
     }
 
@@ -1066,11 +1080,11 @@ export default defineBackground(() => {
       broadcastJobSync(updated);
     }
 
-    // 3. 立即下发分轮终审指令至 DeepSeek 当前会话（单通道防重派发）
+    // 3. 立即下发分轮终审指令至终审站点当前会话（单通道防重派发）
     if (targetTabId) {
-      const ready = await ensureContentScriptReady(targetTabId, 'DeepSeek');
+      const ready = await ensureContentScriptReady(targetTabId, judgeSite);
       let dispatched = false;
-      const port = contentPorts.get('DeepSeek');
+      const port = contentPorts.get(judgeSite);
       if (port) {
         try {
           port.postMessage({
@@ -1079,7 +1093,7 @@ export default defineBackground(() => {
           });
           dispatched = true;
         } catch (e) {
-          console.warn('[Background] Port postMessage DISPATCH_SYNTHESIS_PROMPT failed:', e);
+          console.warn(`[Background] Port postMessage DISPATCH_SYNTHESIS_PROMPT to ${judgeSite} failed:`, e);
         }
       }
       if (!dispatched && ready) {
@@ -1090,7 +1104,7 @@ export default defineBackground(() => {
           });
           dispatched = true;
         } catch (err) {
-          console.warn('[Background] sendMessage DISPATCH_SYNTHESIS_PROMPT failed:', err);
+          console.warn(`[Background] sendMessage DISPATCH_SYNTHESIS_PROMPT to ${judgeSite} failed:`, err);
         }
       }
       if (dispatched) {

@@ -6,12 +6,11 @@ import { chatGPTAdapter } from '../lib/adapters/chatgpt.adapter';
 import { claudeAdapter } from '../lib/adapters/claude.adapter';
 import { qwenAdapter } from '../lib/adapters/qwen.adapter';
 import { wenxinAdapter } from '../lib/adapters/wenxin.adapter';
-import { chatGLMAdapter } from '../lib/adapters/chatglm.adapter';
 import { geminiAdapter } from '../lib/adapters/gemini.adapter';
 import { stripThinkBlocks } from '../lib/utils/think-block-strip';
 import type { SupportedSite } from '../lib/types/review-job';
 
-describe('All 7 Supported Site Adapters & Registry Conformance', () => {
+describe('All 6 Supported Site Adapters & Registry Conformance', () => {
   const allSites: SupportedSite[] = [
     'DeepSeek',
     'ChatGPT',
@@ -19,10 +18,9 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     'Gemini',
     'Qwen',
     'Wenxin',
-    'ChatGLM',
   ];
 
-  it('should have all 7 adapters registered in adapterRegistry', () => {
+  it('should have all 6 adapters registered in adapterRegistry', () => {
     for (const site of allSites) {
       expect(adapterRegistry.has(site)).toBe(true);
       const adapter = adapterRegistry.get(site);
@@ -32,14 +30,11 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     }
   });
 
-  it('should accurately test URL patterns for all 7 sites', () => {
+  it('should accurately test URL patterns for all 6 sites', () => {
     expect(qwenAdapter.urlPattern.test('https://chat.qwen.ai/')).toBe(true);
     expect(qwenAdapter.urlPattern.test('https://chat.qwen.ai/c/123')).toBe(true);
 
     expect(wenxinAdapter.urlPattern.test('https://wenxin.baidu.com/')).toBe(true);
-
-    expect(chatGLMAdapter.urlPattern.test('https://chatglm.cn/')).toBe(true);
-    expect(chatGLMAdapter.urlPattern.test('https://chatglm.cn/main/gchat/abc')).toBe(true);
 
     expect(geminiAdapter.urlPattern.test('https://gemini.google.com/')).toBe(true);
     expect(geminiAdapter.urlPattern.test('https://gemini.google.com/app/123')).toBe(true);

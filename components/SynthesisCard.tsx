@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import type { SynthesisRun, ProviderStatus, ReviewJob } from '../lib/types/review-job';
+import type { SynthesisRun, ProviderStatus, ReviewJob, SupportedSite } from '../lib/types/review-job';
 import {
   Sparkles,
   Copy,
@@ -24,6 +24,7 @@ import {
 interface SynthesisCardProps {
   synthesisRun?: SynthesisRun;
   activeJob?: ReviewJob | null;
+  judgeSite?: SupportedSite;
   onFocusSynthesisTab?: () => void;
   onTriggerSynthesis?: () => void;
   canTriggerSynthesis?: boolean;
@@ -32,6 +33,7 @@ interface SynthesisCardProps {
 export const SynthesisCard: React.FC<SynthesisCardProps> = ({
   synthesisRun,
   activeJob,
+  judgeSite = 'DeepSeek',
   onFocusSynthesisTab,
   onTriggerSynthesis,
   canTriggerSynthesis,
@@ -92,7 +94,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
           </div>
           <div>
             <div className="font-bold text-xs text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-              <span>DeepSeek 汇总窗口</span>
+              <span>{judgeSite} 汇总窗口</span>
               {status === 'STREAMING' && (
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
               )}
@@ -178,10 +180,10 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
             <div className="text-center py-5 px-3 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
               <p>
                 {status === 'WAITING_READY' || status === 'SENDING'
-                  ? '正在向 DeepSeek 当前会话分轮投递各 AI 回复数据进行全景汇总...'
+                  ? `正在向 ${judgeSite} 当前会话分轮投递各 AI 回复数据进行全景汇总...`
                   : status === 'STREAMING'
-                  ? 'DeepSeek 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...'
-                  : '终审仅支持手动触发（不会自动发布）。请先核验各站点回复内容完整，确认无误后点击下方按钮手动分轮发送至 DeepSeek 当前会话汇总。'}
+                  ? `${judgeSite} 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...`
+                  : `终审仅支持手动触发（不会自动发布）。请先核验各站点回复内容完整，确认无误后点击下方按钮手动分轮发送至 ${judgeSite} 当前会话汇总（可在⚙️设置中更换终审站点）。`}
               </p>
               {status !== 'STREAMING' && canTriggerSynthesis && onTriggerSynthesis && (
                 <div className="pt-1">
@@ -191,7 +193,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                     className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium inline-flex items-center gap-1 shadow-2xs transition-colors cursor-pointer not-italic"
                   >
                     <Play className="w-3 h-3 fill-current" />
-                    <span>{status === 'FAILED' ? '重试发送至 DeepSeek 汇总' : '立即发送至 DeepSeek 当前会话汇总'}</span>
+                    <span>{status === 'FAILED' ? `重试发送至 ${judgeSite} 汇总` : `立即发送至 ${judgeSite} 当前会话汇总`}</span>
                   </button>
                 </div>
               )}

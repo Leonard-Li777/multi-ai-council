@@ -335,7 +335,8 @@ export class QwenAdapter implements AISiteAdapter {
 
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     const chatContainer =
       document.querySelector<HTMLElement>('main, div[class*="chat-container"], div[class*="message-list"]') ||
@@ -468,7 +469,8 @@ export class QwenAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
       userPrompt: this.lastPrompt,
     });
 
@@ -644,7 +646,7 @@ export class QwenAdapter implements AISiteAdapter {
     return false;
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     const input = this.findInputElement();
     const container = input ? (input.closest('form, div[class*="chat-input"], div[class*="input"], div[class*="sender"]') as HTMLElement | null) : null;
     const searchRoot = container || document;

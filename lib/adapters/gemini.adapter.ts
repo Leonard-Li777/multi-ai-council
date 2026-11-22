@@ -227,7 +227,8 @@ export class GeminiAdapter implements AISiteAdapter {
 
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     const chatContainer =
       document.querySelector<HTMLElement>('main, div[class*="chat-history"], div[class*="conversation-container"]') ||
@@ -314,7 +315,8 @@ export class GeminiAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
     });
 
     this.activeDetector.start(chatContainer);
@@ -434,7 +436,7 @@ export class GeminiAdapter implements AISiteAdapter {
     return 'FAILED';
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     // 1. 优先在输入区域内查找停止按钮，避免全网页范围误命中非生成相关的静态按钮
     const input = this.findInputElement();
     const container = input ? (input.closest('rich-textarea, div[class*="input-area"], div[class*="text-input"], form') as HTMLElement | null) : null;

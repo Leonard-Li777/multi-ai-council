@@ -23,8 +23,7 @@ export type SupportedSite =
   | 'Claude'
   | 'Gemini'
   | 'Qwen'
-  | 'Wenxin'
-  | 'ChatGLM';
+  | 'Wenxin';
 
 export interface ProviderConversationRef {
   siteName: SupportedSite;
@@ -56,7 +55,7 @@ export interface SynthesisRun {
 export interface AggregationPolicy {
   minCompletedProviders: number; // Quorum 降级最低满足数量 (首版默认 1，多站时默认 3)
   allowPartialAggregation: boolean;
-  judgeProvider: 'DeepSeek';
+  judgeProvider: SupportedSite;
   enabledSites: SupportedSite[];
 }
 

@@ -44,8 +44,8 @@ describe('Conversation Reference & Multi-Turn Helpers', () => {
     expect(fallbackUrl).toBe('https://chat.deepseek.com/');
   });
 
-  it('should provide valid base URLs for all 7 supported sites', () => {
-    const sites: SupportedSite[] = ['DeepSeek', 'ChatGPT', 'Claude', 'Gemini', 'Qwen', 'Wenxin', 'ChatGLM'];
+  it('should provide valid base URLs for all 6 supported sites', () => {
+    const sites: SupportedSite[] = ['DeepSeek', 'ChatGPT', 'Claude', 'Gemini', 'Qwen', 'Wenxin'];
     for (const site of sites) {
       const baseUrl = SITE_BASE_URLS[site];
       expect(baseUrl).toBeDefined();

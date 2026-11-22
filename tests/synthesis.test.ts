@@ -234,5 +234,38 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       expect(plan.steps[3]?.prompt).toBe(SEQUENTIAL_SYNTHESIS_FINAL_COMMIT);
       expect(plan.steps[3]?.isFinal).toBe(true);
     });
+
+    it('支持自定义选择其他站点（如 ChatGPT）作为终审模型，自动排除 ChatGPT 并分轮投递 DeepSeek 与 Qwen', () => {
+      const runs: ProviderRun[] = [
+        {
+          siteName: 'DeepSeek',
+          status: 'DONE',
+          responseSnapshot: 'DeepSeek 观点结论。',
+          cleanedResponse: 'DeepSeek 观点结论。',
+          retryCount: 0,
+        },
+        {
+          siteName: 'ChatGPT',
+          status: 'DONE',
+          responseSnapshot: 'ChatGPT 自身回复（应排除）',
+          cleanedResponse: 'ChatGPT 自身回复（应排除）',
+          retryCount: 0,
+        },
+        {
+          siteName: 'Qwen',
+          status: 'DONE',
+          responseSnapshot: 'Qwen 观点结论。',
+          cleanedResponse: 'Qwen 观点结论。',
+          retryCount: 0,
+        },
+      ];
+
+      const plan = buildSequentialSynthesisSteps(runs, 'ChatGPT');
+      expect(plan.participatingCount).toBe(2);
+      expect(plan.steps.length).toBe(4);
+      expect(plan.steps[1]?.siteName).toBe('DeepSeek');
+      expect(plan.steps[2]?.siteName).toBe('Qwen');
+      expect(plan.steps.some((s) => s.siteName === 'ChatGPT')).toBe(false);
+    });
   });
 });

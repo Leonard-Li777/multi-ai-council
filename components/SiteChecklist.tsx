@@ -25,7 +25,6 @@ export const SUPPORTED_SITES: SiteDefinition[] = [
   { id: 'Gemini', name: 'Gemini', url: 'https://gemini.google.com', isReady: true },
   { id: 'Qwen', name: '通义千问', url: 'https://chat.qwen.ai', isReady: true },
   { id: 'Wenxin', name: '文心一言', url: 'https://wenxin.baidu.com', isReady: true },
-  { id: 'ChatGLM', name: '智谱清言', url: 'https://chatglm.cn', isReady: true },
 ];
 
 export const SiteChecklist: React.FC<SiteChecklistProps> = ({

@@ -173,7 +173,6 @@ const BRAND_PATTERNS: Record<SupportedSite, RegExp[]> = {
   Gemini: [/gemini/gi, /google\s?ai/gi],
   Qwen: [/qwen/gi, /通义千问/gi, /阿里千问/gi],
   Wenxin: [/文心一言/gi, /文心大模型/gi, /ernie/gi],
-  ChatGLM: [/chatglm/gi, /智谱清言/gi, /智谱\s?ai/gi],
 };
 
 /**

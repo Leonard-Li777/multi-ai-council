@@ -3,6 +3,7 @@ import { qwenAdapter } from '../lib/adapters/qwen.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
 import { NetworkListener } from '../lib/interceptor/network-listener';
 import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
+import { createSequentialSynthesisRunner } from '../lib/utils/synthesis-runner';
 import { stripThinkBlocks } from '../lib/utils/think-block-strip';
 
 export default defineContentScript({
@@ -19,6 +20,7 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+    const synthesisRunner = createSequentialSynthesisRunner(qwenAdapter, send);
 
     // --- 网络层拦截集成 (双轨融合) ---
     let networkListener: NetworkListener | null = null;
@@ -208,6 +210,9 @@ export default defineContentScript({
             payload: { siteName: 'Qwen', jobId, status: 'FAILED', errorReason: String(err) },
           });
         }
+      } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+        currentJobId = msg.payload.jobId;
+        await synthesisRunner.handleDispatchSynthesis(msg.payload);
       }
     };
 

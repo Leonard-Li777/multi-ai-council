@@ -214,7 +214,8 @@ export class WenxinAdapter implements AISiteAdapter {
 
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     const chatContainer =
       document.querySelector<HTMLElement>('main, div[class*="chat-wrap"], div[class*="dialogue"], div[class*="chat-body"], div[class*="chatBody"]') ||
@@ -343,7 +344,8 @@ export class WenxinAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
     });
 
     this.activeDetector.start(chatContainer);
@@ -424,7 +426,7 @@ export class WenxinAdapter implements AISiteAdapter {
     return null;
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     const input = this.findInputElement();
     const container = input ? (input.closest('div[class*="input"], div[class*="chat-input"], div[class*="chat_input"], div[class*="sender"], form') as HTMLElement | null) : null;
     const searchRoot = container || document;

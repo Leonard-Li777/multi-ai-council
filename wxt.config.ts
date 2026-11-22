@@ -22,7 +22,6 @@ export default defineConfig({
       'https://chat.deepseek.com/*',
       'https://chat.qwen.ai/*',
       'https://wenxin.baidu.com/*',
-      'https://chatglm.cn/*',
       'https://chatgpt.com/*',
       'https://claude.ai/*',
       'https://gemini.google.com/*',

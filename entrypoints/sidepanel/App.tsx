@@ -15,7 +15,7 @@ import {
   sendToBackground,
   type PortMessage,
 } from '../../lib/messaging/port';
-import { SiteChecklist } from '../../components/SiteChecklist';
+import { SiteChecklist, SUPPORTED_SITES } from '../../components/SiteChecklist';
 import { PromptInput } from '../../components/PromptInput';
 import { SiteStatusCard } from '../../components/SiteStatusCard';
 import { SynthesisCard } from '../../components/SynthesisCard';
@@ -44,6 +44,7 @@ export const App: React.FC = () => {
   const [activeJob, setActiveJob] = useState<ReviewJob | null>(null);
   const [promptText, setPromptText] = useState<string>('');
   const [selectedSites, setSelectedSites] = useState<SupportedSite[]>(['DeepSeek']);
+  const [judgeSite, setJudgeSite] = useState<SupportedSite>('DeepSeek');
   const [lastPrompt, setLastPrompt] = useState<string>('');
   const [activeConvUrl, setActiveConvUrl] = useState<string>('');
   const [manualOverride, setManualOverride] = useState<boolean | null>(null);
@@ -86,11 +87,18 @@ export const App: React.FC = () => {
         setActiveConvUrl(ref.conversationUrl);
       }
 
-      // 提取已配置的生效站点
+      // 提取已配置的生效站点与终审站点（自动清洗已下线站点如 ChatGLM）
+      const validSiteIds = new Set<string>(SUPPORTED_SITES.map((s) => s.id));
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        chrome.storage.local.get('enabled_sites', (res) => {
-          if (res?.enabled_sites && Array.isArray(res.enabled_sites) && res.enabled_sites.length > 0) {
-            setSelectedSites(res.enabled_sites);
+        chrome.storage.local.get(['enabled_sites', 'judge_site'], (res) => {
+          if (res?.enabled_sites && Array.isArray(res.enabled_sites)) {
+            const filtered = res.enabled_sites.filter((s: string) => validSiteIds.has(s)) as SupportedSite[];
+            if (filtered.length > 0) {
+              setSelectedSites(filtered);
+            }
+          }
+          if (typeof res?.judge_site === 'string' && validSiteIds.has(res.judge_site)) {
+            setJudgeSite(res.judge_site as SupportedSite);
           }
         });
       }
@@ -150,6 +158,31 @@ export const App: React.FC = () => {
     }
   };
 
+  // 切换终审汇总站点（支持任务中途随时切换，例如 DeepSeek 限流时切换至 ChatGPT / Claude / Gemini 等）
+  const handleJudgeSiteChange = async (site: SupportedSite) => {
+    setJudgeSite(site);
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      chrome.storage.local.set({ judge_site: site }).catch(() => {});
+    }
+    if (activeJob) {
+      const updatedJob: ReviewJob = {
+        ...activeJob,
+        updatedAt: Date.now(),
+        aggregationPolicy: {
+          ...activeJob.aggregationPolicy,
+          judgeProvider: site,
+        },
+      };
+      setActiveJob(updatedJob);
+      await saveActiveJob(updatedJob);
+      const payload = { jobId: activeJob.id, judgeSite: site };
+      if (portSendRef.current) {
+        portSendRef.current({ type: 'SET_JUDGE_SITE', payload });
+      }
+      await sendToBackground({ type: 'SET_JUDGE_SITE', payload });
+    }
+  };
+
   // 启动任务
   const handleStart = async () => {
     if (!promptText.trim()) return;
@@ -178,7 +211,7 @@ export const App: React.FC = () => {
       aggregationPolicy: {
         minCompletedProviders: calculateDefaultMinQuorum(selectedSites.length),
         allowPartialAggregation: true,
-        judgeProvider: 'DeepSeek',
+        judgeProvider: judgeSite,
         enabledSites: selectedSites,
       },
       providerRuns: initialRuns,
@@ -652,20 +685,21 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* Tab 3: 终审看板（DeepSeek 全景汇总窗口） */}
+        {/* Tab 3: 终审看板（自定义终审站点全景汇总窗口） */}
         {activeTab === 'synthesis' && (
           <div className="flex-1 min-h-0 overflow-y-auto pr-1">
             <SynthesisCard
               synthesisRun={activeJob?.synthesisRun}
               activeJob={activeJob}
-              onFocusSynthesisTab={() => handleFocusTab('DeepSeek')}
+              judgeSite={activeJob?.aggregationPolicy?.judgeProvider || judgeSite}
+              onFocusSynthesisTab={() => handleFocusTab(activeJob?.aggregationPolicy?.judgeProvider || judgeSite)}
               onTriggerSynthesis={handleFastForward}
               canTriggerSynthesis={(quorumProgress?.completedCount || 0) > 0}
             />
           </div>
         )}
 
-        {/* Tab 4: 设置（勾选启用的 AI 站点 & 系统控制） */}
+        {/* Tab 4: 设置（勾选启用的 AI 站点、终审站点选择 & 系统控制） */}
         {activeTab === 'settings' && (
           <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-3">
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-2xs">
@@ -686,6 +720,37 @@ export const App: React.FC = () => {
                 runs={activeJob?.providerRuns}
                 disabled={isRunning}
               />
+            </div>
+
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-2xs">
+              <div className="mb-2">
+                <h3 className="font-semibold text-xs text-slate-800 dark:text-slate-200">
+                  ⚖️ 终审汇总站点选择
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  自定义负责最终合并提炼的 AI 站点（如 DeepSeek 限流时可随时切换至其他站点；终审时会自动排除该站点自身回复）
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1.5">
+                {SUPPORTED_SITES.map((site) => {
+                  const isSelected = (activeJob?.aggregationPolicy?.judgeProvider || judgeSite) === site.id;
+                  return (
+                    <button
+                      key={site.id}
+                      type="button"
+                      onClick={() => handleJudgeSiteChange(site.id)}
+                      className={`px-2 py-1.5 rounded-lg border text-xs font-medium transition-all cursor-pointer text-center ${
+                        isSelected
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs font-semibold'
+                          : 'bg-slate-50 dark:bg-slate-800/70 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-indigo-400 hover:text-indigo-600 dark:hover:text-indigo-300'
+                      }`}
+                    >
+                      {site.name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 shadow-2xs">

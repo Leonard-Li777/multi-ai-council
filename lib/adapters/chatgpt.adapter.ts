@@ -387,7 +387,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
    */
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     const chatContainer =
       document.querySelector<HTMLElement>('main, div[class*="react-scroll-to-bottom"], div[role="presentation"]') ||
@@ -429,7 +430,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
     });
 
     this.activeDetector.start(chatContainer);
@@ -595,7 +597,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
     return null;
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('button[data-testid="stop-button"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Stop streaming" i]') ||

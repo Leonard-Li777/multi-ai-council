@@ -189,7 +189,8 @@ export class ClaudeAdapter implements AISiteAdapter {
    */
   public listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void {
     const chatContainer =
       document.querySelector<HTMLElement>('main, div[class*="chat-history"], div[class*="standard-markdown"]') ||
@@ -253,7 +254,8 @@ export class ClaudeAdapter implements AISiteAdapter {
         const { cleaned } = stripThinkBlocks(finalRawMd);
         onDone(cleaned);
       },
-      silenceThresholdMs: 12000,
+      silenceThresholdMs: options?.silenceThresholdMs ?? 12000,
+      allowShortReply: options?.allowShortReply,
       userPrompt: this.lastPrompt,
     });
 
@@ -356,7 +358,7 @@ export class ClaudeAdapter implements AISiteAdapter {
     );
   }
 
-  private findStopButton(): HTMLElement | null {
+  public findStopButton(): HTMLElement | null {
     return (
       document.querySelector<HTMLElement>('button[aria-label*="Stop Response"]') ||
       document.querySelector<HTMLElement>('button[aria-label*="Stop responding"]') ||

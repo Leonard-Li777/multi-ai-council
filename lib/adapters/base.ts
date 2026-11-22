@@ -47,8 +47,14 @@ export interface AISiteAdapter {
    */
   listenGeneration(
     onUpdate: (snapshot: string, cleaned: string) => void,
-    onDone: (finalCleaned: string) => void
+    onDone: (finalCleaned: string) => void,
+    options?: { allowShortReply?: boolean; silenceThresholdMs?: number }
   ): () => void;
+
+  /**
+   * 查找当前页面正在生成的停止按钮（用于分轮终审前等待前序回合结束）
+   */
+  findStopButton?(): HTMLElement | null;
 
   /**
    * 关闭异常弹窗（如提示账户切换、会话过期等）

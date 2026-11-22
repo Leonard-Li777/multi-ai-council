@@ -7,7 +7,6 @@ export const SITE_BASE_URLS: Record<SupportedSite, string> = {
   Gemini: 'https://gemini.google.com/app',
   Qwen: 'https://chat.qwen.ai/',
   Wenxin: 'https://yiyan.baidu.com/',
-  ChatGLM: 'https://chatglm.cn/',
 };
 
 /**

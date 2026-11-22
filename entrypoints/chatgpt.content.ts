@@ -3,6 +3,7 @@ import { chatGPTAdapter } from '../lib/adapters/chatgpt.adapter';
 import { CONTENT_PORT_NAME, setupPortWithHeartbeat, type PortMessage } from '../lib/messaging/port';
 import { NetworkListener } from '../lib/interceptor/network-listener';
 import { createAdapterBridge } from '../lib/interceptor/adapter-bridge';
+import { createSequentialSynthesisRunner } from '../lib/utils/synthesis-runner';
 
 export default defineContentScript({
   matches: ['https://chatgpt.com/*'],
@@ -18,6 +19,7 @@ export default defineContentScript({
     const send = (msg: PortMessage) => {
       if (sendFn) sendFn(msg);
     };
+    const synthesisRunner = createSequentialSynthesisRunner(chatGPTAdapter, send);
 
     // --- 网络层拦截集成 (双轨融合) ---
     // NetworkListener 在 ISOLATED World 监听来自 MAIN World BatchedFrameDispatcher 的帧
@@ -220,6 +222,9 @@ export default defineContentScript({
             payload: { siteName: 'ChatGPT', jobId, status: 'FAILED', errorReason: String(err) },
           });
         }
+      } else if (msg.type === 'DISPATCH_SYNTHESIS_PROMPT') {
+        currentJobId = msg.payload.jobId;
+        await synthesisRunner.handleDispatchSynthesis(msg.payload);
       }
     };
 
