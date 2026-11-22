@@ -38,7 +38,7 @@ export class QuadSignalDoneDetector {
   constructor(options: DoneDetectorOptions) {
     this.options = {
       silenceThresholdMs: 12000,
-      hardSilenceThresholdMs: 15000,
+      hardSilenceThresholdMs: 45000,
       ...options,
     };
   }

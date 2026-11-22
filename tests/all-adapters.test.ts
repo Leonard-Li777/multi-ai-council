@@ -310,4 +310,40 @@ describe('All 7 Supported Site Adapters & Registry Conformance', () => {
     expect(afterChartSnap).toContain('Firefly AI Folder 发布流水线 v2.2');
     stopListener();
   });
+
+  it('chatGPTAdapter strips trailing thinking/reasoning blocks placed after formal markdown inside article', () => {
+    document.body.innerHTML = '';
+    chatGPTAdapter.recordBaseline();
+
+    document.body.innerHTML = `
+      <main>
+        <article>
+          <div data-message-author-role="assistant">
+            <div class="markdown prose">
+              <h1>本地 HTTP 智能双路视频流式播放技术规格书 v1.3</h1>
+              <p>这是正式的架构红队审查结论正文。</p>
+            </div>
+          </div>
+          <div class="flex flex-col">
+            <div>Thought for 1m 23s</div>
+            <div class="prose"><p>这是不应被抓取的尾部思维链推演内容 A。</p></div>
+          </div>
+          <details data-testid="thought-summary">
+            <summary>已思考 45 秒</summary>
+            <div class="prose"><p>这是不应被抓取的尾部思维链推演内容 B。</p></div>
+          </details>
+        </article>
+      </main>
+    `;
+
+    const stopListener = chatGPTAdapter.listenGeneration(() => {}, () => {});
+    const detector = (chatGPTAdapter as any).activeDetector;
+    const content = detector.options.getCurrentContent();
+    expect(content).toContain('本地 HTTP 智能双路视频流式播放技术规格书 v1.3');
+    expect(content).toContain('这是正式的架构红队审查结论正文');
+    expect(content).not.toContain('尾部思维链推演内容 A');
+    expect(content).not.toContain('尾部思维链推演内容 B');
+    expect(content).not.toContain('Thought for 1m 23s');
+    stopListener();
+  });
 });

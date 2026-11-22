@@ -407,17 +407,10 @@ export class ChatGPTAdapter implements AISiteAdapter {
           }
         }
 
-        // 克隆并清理内联图表 SVG 坐标轴、工具栏、复制按钮等非正文噪声
-        const clone = lastMsgEl.cloneNode(true) as HTMLElement;
-        clone
-          .querySelectorAll('svg, canvas, button, [role="toolbar"], [class*="toolbar"], [data-testid*="action"]')
-          .forEach((n) => n.remove());
-
-        const md = domToMarkdown(clone);
-        const result = (md && md.trim().length > 0) ? md : (clone.innerText || clone.textContent || '').trim();
+        const result = this.extractFormalMarkdownFromTurn(lastMsgEl);
 
         // Anti-Shrink 高水位单调保护：彻底杜绝 ChatGPT 尾部渲染图表/卡片/虚拟化重排时，
-        // 将已捕获的 24,829 字长报告覆盖成 68 字图表坐标轴文字！
+        // 将已捕获的长报告覆盖成短文本！
         if (this.highWaterMarkSnapshot.length >= 200 && result.length < this.highWaterMarkSnapshot.length * 0.75) {
           return this.highWaterMarkSnapshot;
         }
@@ -613,6 +606,105 @@ export class ChatGPTAdapter implements AISiteAdapter {
       document.querySelector<HTMLElement>('form button[aria-label="Stop" i]') ||
       document.querySelector<HTMLElement>('form button[aria-label="停止"]')
     );
+  }
+
+  /**
+   * 从 ChatGPT 助手轮次（<article> 或消息容器）中纯净提取正式回复 Markdown：
+   * 1. 彻底剔除思维链/推理摘要抽屉（即使其在 DOM 顺序中位于正式回复之后！）、工具调用、SVG 图表与工具栏
+   * 2. 优先从 [data-message-author-role="assistant"] 内的所有顶层 .markdown/.prose 合并提取
+   */
+  private extractFormalMarkdownFromTurn(turnEl: HTMLElement): string {
+    const THINK_AND_NOISE_SELECTOR = [
+      'details',
+      '[data-testid*="thought" i]',
+      '[data-testid*="thinking" i]',
+      '[data-testid*="reasoning" i]',
+      '[data-testid*="activity" i]',
+      '[data-testid*="search" i]',
+      '[data-testid*="tool" i]',
+      '[data-message-author-role="tool"]',
+      '[data-message-author-role="system"]',
+      '[class*="thought" i]',
+      '[class*="thinking" i]',
+      '[class*="reasoning" i]',
+      '[aria-label*="Thought" i]',
+      '[aria-label*="思考"]',
+      'svg',
+      'canvas',
+      'button',
+      '[role="toolbar"]',
+      '[class*="toolbar"]',
+      '[data-testid*="action"]',
+    ].join(', ');
+
+    const isThinkingHeaderLine = (text: string): boolean => {
+      const firstLine = text.trim().split('\n')[0]?.trim() || '';
+      if (!firstLine || firstLine.length > 80) return false;
+      return /^(Thought for|Thinking|Reasoning|Activity|已思考|思考了|已深度思考|深度思考|思考过程)/i.test(firstLine);
+    };
+
+    const clone = turnEl.cloneNode(true) as HTMLElement;
+
+    // 1. 移除显式思维链、推理抽屉、工具块、图表与工具栏
+    clone.querySelectorAll(THINK_AND_NOISE_SELECTOR).forEach((n) => n.remove());
+
+    // 2. 移除采用纯 Tailwind 混淆类名、但首行以 "Thought for / 已思考 / 思考了" 开头的思维链兄弟面板
+    const directBlocks = Array.from(clone.querySelectorAll<HTMLElement>('div, section, aside'));
+    for (const block of directBlocks) {
+      if (!block.isConnected) continue;
+      // 跳过本身包含正式 assistant 标记的外层容器，只移除独立的思考抽屉块
+      if (block.matches('[data-message-author-role="assistant"]') || block.querySelector('[data-message-author-role="assistant"]')) {
+        continue;
+      }
+      const text = (block.innerText || block.textContent || '').trim();
+      if (isThinkingHeaderLine(text)) {
+        block.remove();
+      }
+    }
+
+    // 3. 若轮次内存在明确的 [data-message-author-role="assistant"] 节点，优先只在这些正式助手节点内提取正文，
+    //    彻底隔离挂在 <article> 尾部的思维链/活动侧栏兄弟节点！
+    const assistantNodes = Array.from(clone.querySelectorAll<HTMLElement>('[data-message-author-role="assistant"]'));
+    const searchRoots: HTMLElement[] = assistantNodes.length > 0 ? assistantNodes : [clone];
+
+    const formalBlocks: string[] = [];
+    for (const root of searchRoots) {
+      const mdCandidates = Array.from(
+        root.querySelectorAll<HTMLElement>('.markdown, [class*="markdown"], .prose, [class*="prose"]')
+      ).filter((el) => {
+        // 只保留顶层 markdown 容器，避免嵌套重复提取
+        const parentMd = el.parentElement?.closest('.markdown, [class*="markdown"], .prose, [class*="prose"]');
+        if (parentMd && root.contains(parentMd)) return false;
+        const t = (el.innerText || el.textContent || '').trim();
+        if (!t || isThinkingHeaderLine(t)) return false;
+        return true;
+      });
+
+      if (mdCandidates.length > 0) {
+        for (const mdEl of mdCandidates) {
+          const md = domToMarkdown(mdEl);
+          const text = (md && md.trim().length > 0) ? md.trim() : (mdEl.innerText || mdEl.textContent || '').trim();
+          if (text) formalBlocks.push(text);
+        }
+      } else {
+        const md = domToMarkdown(root);
+        const text = (md && md.trim().length > 0) ? md.trim() : (root.innerText || root.textContent || '').trim();
+        if (text && !isThinkingHeaderLine(text)) {
+          formalBlocks.push(text);
+        }
+      }
+    }
+
+    const joined = formalBlocks.join('\n\n').trim();
+    if (joined.length > 0) {
+      return stripThinkBlocks(joined).cleaned.trim();
+    }
+
+    const fallbackMd = domToMarkdown(clone);
+    const fallbackText = (fallbackMd && fallbackMd.trim().length > 0)
+      ? fallbackMd.trim()
+      : (clone.innerText || clone.textContent || '').trim();
+    return stripThinkBlocks(fallbackText).cleaned.trim();
   }
 
   private findLatestAssistantMessageElement(): HTMLElement | null {
