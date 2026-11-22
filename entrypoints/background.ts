@@ -666,7 +666,7 @@ export default defineBackground(() => {
   let startingJobId: string | null = null;
   const activeWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function scheduleJobWatchdog(jobId: string, timeoutMs = 15 * 60 * 1000) {
+  function scheduleJobWatchdog(jobId: string, timeoutMs = 25 * 60 * 1000) {
     if (activeWatchdogs.has(jobId)) {
       clearTimeout(activeWatchdogs.get(jobId)!);
       activeWatchdogs.delete(jobId);
@@ -687,11 +687,11 @@ export default defineBackground(() => {
             run.status === 'SENDING' ||
             run.status === 'STREAMING')
         ) {
-          console.warn(`[Background] Watchdog: Site ${siteName} timed out after 15m in state ${run.status}`);
+          console.warn(`[Background] Watchdog: Site ${siteName} timed out after 25m in state ${run.status}`);
           flightRecorder.warn(siteName, 'JOB_WATCHDOG_TIMEOUT', { jobId, status: run.status });
           await updateProviderRun(jobId, siteName, {
             status: 'TIMEOUT',
-            errorReason: `${siteName} 运行超过 15 分钟全局安全阈值，触发硬超时熔断`,
+            errorReason: `${siteName} 运行超过 25 分钟全局安全阈值，触发硬超时熔断`,
             completedAt: Date.now(),
           });
           changed = true;

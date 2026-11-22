@@ -341,4 +341,43 @@ describe('All 6 Supported Site Adapters & Registry Conformance', () => {
     expect(content).not.toContain('Thought for 1m 23s');
     stopListener();
   });
+
+  it('qwenAdapter ignores thinking & search markdown blocks (explicit and obfuscated) and waits for formal reply', () => {
+    document.body.innerHTML = '';
+    qwenAdapter.recordBaseline();
+
+    // 阶段 1：Qwen 仅输出了漫长的搜索与思维链，尚未吐出正式正文 -> 必须返回空字符串继续守候
+    document.body.innerHTML = `
+      <main>
+        <div class="chat-item-user" data-role="user">请对 v2.1 架构方案进行红队审查</div>
+        <div class="chat-item-assistant" data-role="assistant">
+          <div class="ant-collapse web-search-panel">
+            <div class="qwen-markdown">联网搜索结果：正在检索相关架构文档...</div>
+          </div>
+          <div class="obf-wrapper">
+            <div role="button" aria-expanded="true">已深度思考（用时 128 秒）</div>
+            <div class="qwen-markdown">我将以资深系统架构师及严格红队评审员的身份，对待审查的架构方案进行深度解构。通过模拟对抗性思维，全面评估该方案的潜在风险与健壮性边界。</div>
+          </div>
+        </div>
+      </main>
+    `;
+
+    const stopListener = qwenAdapter.listenGeneration(() => {}, () => {});
+    const detector = (qwenAdapter as any).activeDetector;
+    expect(detector.options.getCurrentContent()).toBe('');
+
+    // 阶段 2：Qwen 思维链结束并开始渲染正式回复 -> 必须只抓取正式正文，绝不混入思维链与搜索内容
+    const assistantTurn = document.querySelector('.chat-item-assistant')!;
+    const formalDiv = document.createElement('div');
+    formalDiv.className = 'qwen-markdown';
+    formalDiv.innerHTML = '<h2>一、总体结论</h2><p>方案方向正确，但存在 3 项阻断缺陷需修订后再实施。</p>';
+    assistantTurn.appendChild(formalDiv);
+
+    const content = detector.options.getCurrentContent();
+    expect(content).toContain('一、总体结论');
+    expect(content).toContain('存在 3 项阻断缺陷需修订后再实施');
+    expect(content).not.toContain('我将以资深系统架构师');
+    expect(content).not.toContain('联网搜索结果');
+    stopListener();
+  });
 });
