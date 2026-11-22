@@ -353,8 +353,10 @@ export class GeminiAdapter implements AISiteAdapter {
         const result = this.extractCleanResponseText(lastMsgEl);
 
         // 核心防护：若当前内容完全属于思考块或少于 20 字符的模型名字/占位符（如 "Gemini 2.0 Flash"），返回空以令 Detector 保持守候
+        // 注意：分轮终审中间确认回合（allowShortReply=true，如“收到：【差异标题】”）放宽至 2 字符，避免卡超时
         const { cleaned } = stripThinkBlocks(result);
-        if (cleaned.length < 20) {
+        const minLen = options?.allowShortReply ? 2 : 20;
+        if (cleaned.length < minLen) {
           return '';
         }
 

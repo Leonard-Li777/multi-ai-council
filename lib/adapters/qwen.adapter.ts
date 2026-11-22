@@ -523,8 +523,10 @@ export class QwenAdapter implements AISiteAdapter {
         }
         
         // 核心防护：若当前内容完全属于思考块或少于 35 字符的思考占位，正文返回空以令 Detector 保持守候
+        // 注意：分轮终审中间确认回合（allowShortReply=true，如“收到：【差异标题】”）放宽至 2 字符，避免卡超时
         const { cleaned } = stripThinkBlocks(result);
-        if (cleaned.length < 35) {
+        const minLen = options?.allowShortReply ? 2 : 35;
+        if (cleaned.length < minLen) {
           return '';
         }
 

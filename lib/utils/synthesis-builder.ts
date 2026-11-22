@@ -20,18 +20,21 @@ export interface SequentialSynthesisPlan extends SynthesisPromptResult {
 }
 
 export const SEQUENTIAL_SYNTHESIS_PREAMBLE =
-  '请结合你和第三方Agent的合并，我会分几轮依次提交它们的回复，直到我说提交完成，你再根据他们的回复综合回复一个最佳结果';
+  '我会依次给你多份同一问题的第三方回复。你每收到一份回复，只需简短回复“收到：【简述该回复的核心差异/标题】”即可，切勿提前展开分析或长篇回复；直到我说“开始汇总”，然后请结合你和他们的合并所有回复给出最终详尽回答，不要漏掉任何不同观点，但可以给出你的建议；对于可能造成歧义的需要保留原观点原文，或解释清楚，避免你的模糊传达引起误解。';
 
-export const SEQUENTIAL_SYNTHESIS_FINAL_COMMIT = '提交完成';
+export const SEQUENTIAL_SYNTHESIS_FINAL_COMMIT = '开始汇总';
+
+export const SEQUENTIAL_SYNTHESIS_ACK_REMINDER =
+  '（请仅简短回复“收到：【差异标题】”，切勿提前分析，等待我说“开始汇总”）';
 
 export const DEFAULT_SYNTHESIS_INSTRUCTION =
   '请结合你和他们的合并所有回复给出最终回答，不要漏掉任何不同观点，但可以给出你的建议；对于可能造成歧义的需要保留原观点原文，或解释清楚，避免你的模糊传达引起误解';
 
 /**
- * 为 DeepSeek 当前会话构造分轮依次送审计划：
- * 1. 第 1 轮先发送引导提示词，告知 DeepSeek 等待分轮接收直到“提交完成”
- * 2. 中间 N 轮每次仅提交一个其他站点的回复（排除 DeepSeek 自身，规避单次输入字数上限）
- * 3. 最后 1 轮发送“提交完成”，触发 DeepSeek 输出最终综合回复
+ * 为终审站点当前会话构造分轮依次送审计划：
+ * 1. 第 1 轮先发送引导提示词，要求每收到一份仅回复“收到：【差异标题】”，避免长篇回复打穿额度
+ * 2. 中间 N 轮每次仅提交一个其他站点的回复（排除终审站点自身，规避单次输入字数上限）
+ * 3. 最后 1 轮发送“开始汇总”，触发终审站点输出详尽、零遗漏、防歧义的最终综合回复
  */
 export function buildSequentialSynthesisSteps(
   runs: ProviderRun[],
@@ -75,7 +78,7 @@ export function buildSequentialSynthesisSteps(
     const body = cleaned.trim();
     if (!body) return;
 
-    const block = `### 【${run.siteName} 的回答】\n\n${body}`;
+    const block = `### 【${run.siteName} 的回答】\n\n${body}\n\n${SEQUENTIAL_SYNTHESIS_ACK_REMINDER}`;
     modelBlocks.push(block);
     steps.push({
       id: `site-${run.siteName}`,
@@ -98,7 +101,7 @@ export function buildSequentialSynthesisSteps(
 
   steps.push({
     id: 'commit',
-    label: '发送「提交完成」并生成最终综合回答',
+    label: '发送「开始汇总」并生成最终综合回答',
     prompt: finalCommit.trim(),
     isFinal: true,
   });

@@ -217,11 +217,16 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
 
       expect(plan.steps[0]?.id).toBe('preamble');
       expect(plan.steps[0]?.prompt).toBe(SEQUENTIAL_SYNTHESIS_PREAMBLE);
+      expect(plan.steps[0]?.prompt).toContain('收到：【');
+      expect(plan.steps[0]?.prompt).toContain('开始汇总');
+      expect(plan.steps[0]?.prompt).toContain('不要漏掉任何不同观点');
+      expect(plan.steps[0]?.prompt).toContain('保留原观点原文');
       expect(plan.steps[0]?.isFinal).toBe(false);
 
       expect(plan.steps[1]?.siteName).toBe('ChatGPT');
       expect(plan.steps[1]?.prompt).toContain('### 【ChatGPT 的回答】');
       expect(plan.steps[1]?.prompt).toContain('ChatGPT 核心结论。');
+      expect(plan.steps[1]?.prompt).toContain('收到：【差异标题】');
       expect(plan.steps[1]?.prompt).not.toContain('<think>');
       expect(plan.steps[1]?.isFinal).toBe(false);
 
@@ -231,6 +236,7 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       expect(plan.steps[2]?.isFinal).toBe(false);
 
       expect(plan.steps[3]?.id).toBe('commit');
+      expect(plan.steps[3]?.prompt).toBe('开始汇总');
       expect(plan.steps[3]?.prompt).toBe(SEQUENTIAL_SYNTHESIS_FINAL_COMMIT);
       expect(plan.steps[3]?.isFinal).toBe(true);
     });
