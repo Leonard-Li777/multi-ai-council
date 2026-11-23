@@ -1,4 +1,4 @@
-import type { ProviderRun, SupportedSite } from '../types/review-job';
+import type { ProviderRun, SupportedSite, ReviewJob } from '../types/review-job';
 import { stripThinkBlocks } from './think-block-strip';
 
 export interface SynthesisPromptResult {
@@ -304,4 +304,40 @@ ${modelBlocks.join('\n\n')}
     anonymousMap,
     participatingCount: shuffledRuns.length,
   };
+}
+
+/**
+ * 将任务中所有已产出有效回复的站点内容串联为结构化的 Markdown 文本
+ * 便于用户一键复制所有站点的完整回复（剥离思考块并保留原观点）
+ */
+export function buildAllCompletedResponsesText(
+  job?: ReviewJob | null,
+  options?: { includePrompt?: boolean }
+): string {
+  if (!job || !job.providerRuns) return '';
+
+  const runs = Object.values(job.providerRuns).filter(
+    (r) =>
+      (r.status === 'DONE' || r.status === 'PARTIAL') &&
+      ((r.cleanedResponse && r.cleanedResponse.trim().length > 0) ||
+        (r.responseSnapshot && r.responseSnapshot.trim().length > 0))
+  );
+
+  if (runs.length === 0) return '';
+
+  const blocks: string[] = [];
+  runs.forEach((run) => {
+    const raw = (run.cleanedResponse || run.responseSnapshot || '').trim();
+    const { cleaned } = stripThinkBlocks(raw);
+    const content = cleaned.trim() || raw;
+    blocks.push(`### 【${run.siteName} 的回答】\n\n${content}`);
+  });
+
+  const includePrompt = options?.includePrompt ?? true;
+  let header = `# Multi-AI Council 多模型回复汇总\n\n`;
+  if (includePrompt && job.originalPrompt) {
+    header += `> **原始问题**：\n> ${job.originalPrompt.replace(/\n/g, '\n> ')}\n\n---\n\n`;
+  }
+
+  return `${header}${blocks.join('\n\n---\n\n')}`;
 }

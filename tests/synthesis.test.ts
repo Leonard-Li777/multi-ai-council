@@ -3,12 +3,13 @@ import {
   buildAnonymizedSynthesisPrompt,
   buildFollowUpSynthesisPrompt,
   buildSequentialSynthesisSteps,
+  buildAllCompletedResponsesText,
   sanitizeBrandMentions,
   DEFAULT_SYNTHESIS_INSTRUCTION,
   SEQUENTIAL_SYNTHESIS_PREAMBLE,
   SEQUENTIAL_SYNTHESIS_FINAL_COMMIT,
 } from '../lib/utils/synthesis-builder';
-import type { ProviderRun } from '../lib/types/review-job';
+import type { ProviderRun, ReviewJob } from '../lib/types/review-job';
 
 describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
   it('should sanitize brand mentions accurately', () => {
@@ -272,6 +273,81 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       expect(plan.steps[1]?.siteName).toBe('DeepSeek');
       expect(plan.steps[2]?.siteName).toBe('Qwen');
       expect(plan.steps.some((s) => s.siteName === 'ChatGPT')).toBe(false);
+    });
+  });
+
+  describe('buildAllCompletedResponsesText (一键复制所有站点回复)', () => {
+    it('串联所有已完成站点的回复，剥离思考块并格式化分割', () => {
+      const mockJob: ReviewJob = {
+        id: 'test-job-copy-all',
+        originalPrompt: '如何设计一个高可用的分布式缓存集群？',
+        isContinuation: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        deadlineAt: Date.now() + 60000,
+        aggregationPolicy: {
+          minCompletedProviders: 2,
+          allowPartialAggregation: true,
+          judgeProvider: 'DeepSeek',
+          enabledSites: ['DeepSeek', 'ChatGPT', 'Claude'],
+        },
+        providerRuns: {
+          DeepSeek: {
+            siteName: 'DeepSeek',
+            status: 'DONE',
+            responseSnapshot: '<think>内部思考</think>建议采用一致性哈希分片。',
+            cleanedResponse: '建议采用一致性哈希分片。',
+            retryCount: 0,
+          },
+          ChatGPT: {
+            siteName: 'ChatGPT',
+            status: 'DONE',
+            responseSnapshot: 'ChatGPT 回答：务必配置多副本与自动故障转移。',
+            cleanedResponse: 'ChatGPT 回答：务必配置多副本与自动故障转移。',
+            retryCount: 0,
+          },
+          Claude: {
+            siteName: 'Claude',
+            status: 'FAILED',
+            responseSnapshot: '',
+            cleanedResponse: '',
+            retryCount: 0,
+          },
+        },
+        active: true,
+      };
+
+      const result = buildAllCompletedResponsesText(mockJob);
+      expect(result).toContain('# Multi-AI Council 多模型回复汇总');
+      expect(result).toContain('如何设计一个高可用的分布式缓存集群？');
+      expect(result).toContain('### 【DeepSeek 的回答】');
+      expect(result).toContain('建议采用一致性哈希分片。');
+      expect(result).not.toContain('<think>');
+      expect(result).toContain('### 【ChatGPT 的回答】');
+      expect(result).toContain('ChatGPT 回答：务必配置多副本与自动故障转移。');
+      expect(result).not.toContain('### 【Claude 的回答】'); // 失败站点被排除
+      expect(result).toContain('---');
+    });
+
+    it('当任务为空或没有已完成回复时返回空字符串', () => {
+      expect(buildAllCompletedResponsesText(null)).toBe('');
+      const emptyJob: ReviewJob = {
+        id: 'empty',
+        originalPrompt: 'test',
+        isContinuation: false,
+        createdAt: 0,
+        updatedAt: 0,
+        deadlineAt: 0,
+        aggregationPolicy: {
+          minCompletedProviders: 1,
+          allowPartialAggregation: true,
+          judgeProvider: 'DeepSeek',
+          enabledSites: [],
+        },
+        providerRuns: {},
+        active: false,
+      };
+      expect(buildAllCompletedResponsesText(emptyJob)).toBe('');
     });
   });
 });

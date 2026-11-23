@@ -20,6 +20,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
   private baselineArticleCount = 0;
   private lastPromptLength = 0;
   private didClickSend = false;
+  private hasConfirmedInjected = false;
   private highWaterMarkSnapshot = '';
 
   public recordBaseline(): void {
@@ -28,6 +29,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
     this.baselineLastContent = el ? (domToMarkdown(el) || el.innerText || el.textContent || '').trim() : '';
     this.baselineArticleCount = document.querySelectorAll('article').length;
     this.highWaterMarkSnapshot = '';
+    this.hasConfirmedInjected = false;
   }
 
   /**
@@ -179,6 +181,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
     flightRecorder.info('ChatGPT', 'INPUT_FOUND', { tag: input.tagName, id: input.id });
     this.lastPromptLength = prompt.length;
     this.didClickSend = false;
+    this.hasConfirmedInjected = false;
 
     // 2. 模拟写入 ProseMirror 富文本或标准 textarea
     input.click();
@@ -188,13 +191,25 @@ export class ChatGPTAdapter implements AISiteAdapter {
       injected = await simulateTextInput(input, prompt);
     } catch {}
 
-    // 辅助函数：读取输入框当前文本
-    const readInputText = (el: HTMLElement): string =>
-      el instanceof HTMLTextAreaElement ? el.value : (el.innerText || el.textContent || '');
+    // 辅助函数：严格验证编辑器是否真正注入了有效文本（排除空值或默认占位符）
+    const isTextPresent = (el: HTMLElement, expected: string): boolean => {
+      const val = (el instanceof HTMLTextAreaElement ? el.value : (el.innerText || el.textContent || '')).trim();
+      if (val.length === 0) return false;
+      const placeholders = [
+        'ask anything',
+        'message chatgpt',
+        '给 chatgpt 发送消息',
+        '有什么可以帮你的',
+        '问任何问题',
+      ];
+      if (placeholders.some((ph) => val.toLowerCase() === ph)) return false;
+      const lead = expected.trim().slice(0, 15);
+      return val.includes(lead) || val.length >= Math.min(10, expected.trim().length);
+    };
 
-    // 若模拟写入未生效或为空，根据元素类型分别执行严格注入保底
-    let currentVal = readInputText(input);
-    if (!injected || currentVal.trim().length === 0) {
+    // 若模拟写入未生效或文本未留存，执行 ChatGPT ProseMirror 结构化保底注入
+    if (!isTextPresent(input, prompt)) {
+      flightRecorder.warn('ChatGPT', 'PROMPT_INJECT_FALLBACK_PROSEMIRROR', { len: prompt.length });
       if (input instanceof HTMLTextAreaElement) {
         const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
         if (valueSetter) {
@@ -207,7 +222,7 @@ export class ChatGPTAdapter implements AISiteAdapter {
         input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
       } else {
-        // 先尝试触发 ProseMirror 原生 paste 通道（对超长文本与后台标签页最可靠）
+        // 先尝试通过真实 paste 事件派发（最契合 ProseMirror 事务流）
         try {
           const dt = new DataTransfer();
           dt.setData('text/plain', prompt);
@@ -215,15 +230,22 @@ export class ChatGPTAdapter implements AISiteAdapter {
           input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         } catch {}
 
-        currentVal = readInputText(input);
-        if (currentVal.trim().length === 0) {
-          let p = input.querySelector('p');
-          if (!p) {
-            p = document.createElement('p');
-            input.innerHTML = '';
+        if (!isTextPresent(input, prompt)) {
+          // 规范构建 ProseMirror block 树，严禁直接 innerText 破坏 DOM 树
+          input.innerHTML = '';
+          const lines = prompt.split('\n');
+          lines.forEach((line) => {
+            const p = document.createElement('p');
+            p.setAttribute('dir', 'auto');
+            if (line.length === 0) {
+              const br = document.createElement('br');
+              br.className = 'ProseMirror-trailingBreak';
+              p.appendChild(br);
+            } else {
+              p.appendChild(document.createTextNode(line));
+            }
             input.appendChild(p);
-          }
-          p.textContent = prompt;
+          });
           input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: prompt }));
           input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: prompt }));
           input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, composed: true, data: prompt }));
@@ -231,16 +253,17 @@ export class ChatGPTAdapter implements AISiteAdapter {
           input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
         }
       }
-      injected = true;
-      flightRecorder.info('ChatGPT', 'PROMPT_INJECT_FALLBACK_TREE', {
-        promptLength: prompt.length,
-        actualLength: readInputText(input).trim().length,
-      });
-    } else {
+    }
+
+    if (isTextPresent(input, prompt)) {
+      this.hasConfirmedInjected = true;
+      const actualLen = (input instanceof HTMLTextAreaElement ? input.value : input.innerText || input.textContent || '').trim().length;
       flightRecorder.info('ChatGPT', 'PROMPT_INJECT_SUCCESS', {
         promptLength: prompt.length,
-        actualLength: currentVal.trim().length,
+        actualLength: actualLen,
       });
+    } else {
+      flightRecorder.error('ChatGPT', 'PROMPT_INJECT_FAILED_EMPTY');
     }
 
     await this.sleep(350);
@@ -320,6 +343,10 @@ export class ChatGPTAdapter implements AISiteAdapter {
    */
   public async validateSubmission(): Promise<boolean> {
     const isInputClearedOrShrunk = (el: HTMLElement): boolean => {
+      // 必须确保确实成功填入过文本且执行了提交动作，输入框变空才是“已提交清空”；否则原本就为空绝非已清空！
+      if (!this.hasConfirmedInjected || !this.didClickSend) {
+        return false;
+      }
       const val = (el instanceof HTMLTextAreaElement ? el.value : (el.innerText || el.textContent || '')).trim();
       if (val.length === 0) return true;
       // 针对超长提示词（如 49,000 字）被 ProseMirror 折叠为附件胶囊或已清空但留有占位符的场景
@@ -357,7 +384,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
       }
 
       const input = this.findInputElement();
-      if (input && i >= 2 && isInputClearedOrShrunk(input)) {
+      // 核心门禁：仅在确实成功注入过文本且执行了提交动作的前提下，输入框由满变空才能作为成功辅助判定，严禁空输入框误判！
+      if (input && this.hasConfirmedInjected && this.didClickSend && i >= 2 && isInputClearedOrShrunk(input)) {
         flightRecorder.info('ChatGPT', 'VALIDATE_SUBMISSION_PASS', { reason: 'INPUT_CLEARED' });
         return true;
       }
@@ -387,8 +415,8 @@ export class ChatGPTAdapter implements AISiteAdapter {
       return true;
     }
 
-    // 唯一单次温和补发兜底：仅在经过整整 6 秒无响应且依然处于未发送时尝试单次 Enter，严禁循环内频繁轰炸
-    if (finalInput) {
+    // 唯一单次温和补发兜底：仅在已注入文本、经过整整 6 秒无响应且依然处于未发送时尝试单次 Enter，严禁循环内频繁轰炸
+    if (finalInput && this.hasConfirmedInjected) {
       flightRecorder.warn('ChatGPT', 'VALIDATE_SUBMISSION_RETRY_ENTER_ONCE');
       finalInput.focus();
       const eventInit: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, composed: true };

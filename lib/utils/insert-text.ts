@@ -39,34 +39,48 @@ export async function simulateTextInput(
   }
 
   // 若为 contenteditable 富文本 (ProseMirror / Lexical / Quill / 百度富文本等)
+  // 1. 定位真实的可编辑节点（处理外层 wrapper 场景）
+  let target: HTMLElement = element;
+  if (target.getAttribute('contenteditable') !== 'true') {
+    const innerEditable = target.querySelector<HTMLElement>('[contenteditable="true"]');
+    if (innerEditable) {
+      target = innerEditable;
+    }
+  }
+
+  target.focus();
+
+  // 2. 特殊处理：如果是 Gemini Quill 编辑器 (div.ql-editor)
+  const qlEditor = target.classList.contains('ql-editor') ? target : target.closest('.ql-editor');
+  if (qlEditor) {
+    qlEditor.innerHTML = `<p>${text}</p>`;
+    qlEditor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    return true;
+  }
+
+  // 辅助检测函数：验证编辑器是否已包含目标文本（排除空或纯占位符）
+  const isContentInjected = (el: HTMLElement, expected: string): boolean => {
+    const val = (el.innerText || el.textContent || '').trim();
+    if (val.length === 0) return false;
+    const lead = expected.trim().slice(0, 15);
+    return val.includes(lead) || val.length >= Math.min(20, expected.trim().length);
+  };
+
+  // 3. 优先通道：模拟真实 ClipboardEvent ('paste')
+  // 现代富文本（ProseMirror / Lexical / Draft.js）以 paste 作为处理多行格式的最佳管道
   try {
-    // 1. 全选已有内容以备覆写
     const selection = window.getSelection();
+    let p = target.querySelector('p');
+    if (!p) {
+      p = document.createElement('p');
+      target.appendChild(p);
+    }
     const range = document.createRange();
-    range.selectNodeContents(element);
+    range.selectNodeContents(p);
+    range.collapse(false);
     selection?.removeAllRanges();
     selection?.addRange(range);
 
-    // 2. 派发 beforeinput 事件
-    element.dispatchEvent(
-      new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text })
-    );
-
-    // 3. 优先尝试 document.execCommand('insertText')，原生驱动内部编辑器状态
-    const success = document.execCommand('insertText', false, text);
-    element.dispatchEvent(
-      new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text })
-    );
-
-    if (success && (element.textContent || '').trim().length > 0) {
-      return true;
-    }
-  } catch (err) {
-    console.warn('[simulateTextInput] execCommand failed, fallback to paste event', err);
-  }
-
-  // 4. 降级：构造 ClipboardEvent ('paste')
-  try {
     const dataTransfer = new DataTransfer();
     dataTransfer.setData('text/plain', text);
     const pasteEvent = new ClipboardEvent('paste', {
@@ -75,26 +89,84 @@ export async function simulateTextInput(
       composed: true,
       clipboardData: dataTransfer,
     });
-    element.dispatchEvent(pasteEvent);
-    element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    element.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'a' }));
-    if ((element.textContent || '').trim().length > 0) {
+    target.dispatchEvent(pasteEvent);
+    target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+    if (isContentInjected(target, text)) {
       return true;
     }
   } catch (err) {
-    console.warn('[simulateTextInput] paste event failed', err);
+    console.warn('[simulateTextInput] paste event simulation failed', err);
   }
 
-  // 5. 特殊处理：如果是 Gemini Quill 编辑器 (div.ql-editor)
-  const qlEditor = element.classList.contains('ql-editor') ? element : element.closest('.ql-editor');
-  if (qlEditor) {
-    qlEditor.innerHTML = `<p>${text}</p>`;
-    qlEditor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-    return true;
+  // 4. 次选通道：document.execCommand('insertText') 原生命令
+  if (typeof document.execCommand === 'function') {
+    try {
+      const selection = window.getSelection();
+      let p = target.querySelector('p') || target;
+      const range = document.createRange();
+      range.selectNodeContents(p);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      target.dispatchEvent(
+        new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text })
+      );
+      const success = document.execCommand('insertText', false, text);
+      target.dispatchEvent(
+        new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: text })
+      );
+
+      if (success && isContentInjected(target, text)) {
+        return true;
+      }
+    } catch (err) {
+      console.warn('[simulateTextInput] execCommand failed, fallback to structured DOM', err);
+    }
   }
 
-  // 6. 最后的底层写入保底
-  element.innerText = text;
-  element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-  return (element.textContent || '').trim().length > 0;
+  // 5. 保底通道：构建符合 ProseMirror/HTML 规范的结构化段落（严禁直接 target.innerText 破坏 DOM 树）
+  try {
+    target.innerHTML = '';
+    const lines = text.split('\n');
+    lines.forEach((line) => {
+      const p = document.createElement('p');
+      p.setAttribute('dir', 'auto');
+      if (line.length === 0) {
+        const br = document.createElement('br');
+        br.className = 'ProseMirror-trailingBreak';
+        p.appendChild(br);
+      } else {
+        p.appendChild(document.createTextNode(line));
+      }
+      target.appendChild(p);
+    });
+
+    target.dispatchEvent(
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        inputType: 'insertText',
+        data: text,
+      })
+    );
+    target.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        composed: true,
+        inputType: 'insertText',
+        data: text,
+      })
+    );
+    target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+
+    return (target.textContent || '').trim().length > 0;
+  } catch (err) {
+    console.warn('[simulateTextInput] structured DOM fallback failed', err);
+  }
+
+  return (target.textContent || '').trim().length > 0;
 }

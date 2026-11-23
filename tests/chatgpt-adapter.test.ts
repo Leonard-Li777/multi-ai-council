@@ -4,6 +4,7 @@ import { chatGPTAdapter } from '../lib/adapters/chatgpt.adapter';
 import { deepSeekAdapter } from '../lib/adapters/deepseek.adapter';
 import { adapterRegistry } from '../lib/adapters/base';
 import { extractConversationId, getTargetDispatchUrl } from '../lib/utils/conversation-helper';
+import { simulateTextInput } from '../lib/utils/insert-text';
 
 describe('ChatGPT Adapter & Contract Conformance', () => {
   it('should conform to AISiteAdapter metadata contracts', () => {
@@ -90,6 +91,46 @@ describe('ChatGPT Adapter & Contract Conformance', () => {
     const found = (chatGPTAdapter as any).findLatestAssistantMessageElement();
     expect(found).not.toBeNull();
     expect(found?.textContent).toContain('外部红队审查报告');
+
+    document.body.innerHTML = '';
+  });
+
+  it('validateSubmission should NOT falsely pass on an initially empty input box without confirmed injection and send', async () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true" class="ProseMirror"></div>
+    `;
+
+    chatGPTAdapter.recordBaseline();
+    // 尚未确认注入且未点击发送
+    (chatGPTAdapter as any).hasConfirmedInjected = false;
+    (chatGPTAdapter as any).didClickSend = false;
+
+    // 此时 validateSubmission 应当返回 false（绝不能把原本就空的输入框判定为 INPUT_CLEARED 通过）
+    const passed = await chatGPTAdapter.validateSubmission();
+    expect(passed).toBe(false);
+
+    document.body.innerHTML = '';
+  }, 12000);
+
+  it('simulateTextInput safely structures multi-line paragraphs in ProseMirror contenteditable without breaking DOM', async () => {
+    document.body.innerHTML = `
+      <div id="prompt-textarea" contenteditable="true" class="ProseMirror">
+        <p><br class="ProseMirror-trailingBreak"></p>
+      </div>
+    `;
+
+    const input = document.getElementById('prompt-textarea')!;
+    const multilineText = '第一行提示词内容\n第二行关键技术约束\n\n第四行审查要求';
+
+    const injected = await simulateTextInput(input, multilineText);
+    expect(injected).toBe(true);
+
+    // 验证 ProseMirror block 结构被正确保留为段落
+    const paragraphs = input.querySelectorAll('p');
+    expect(paragraphs.length).toBeGreaterThan(0);
+    expect(input.textContent).toContain('第一行提示词内容');
+    expect(input.textContent).toContain('第二行关键技术约束');
+    expect(input.textContent).toContain('第四行审查要求');
 
     document.body.innerHTML = '';
   });
