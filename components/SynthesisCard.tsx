@@ -13,6 +13,8 @@ import {
   FileCode,
   ExternalLink,
   Play,
+  Layers,
+  Zap,
 } from 'lucide-react';
 import {
   revealModelIdentities,
@@ -27,7 +29,7 @@ interface SynthesisCardProps {
   activeJob?: ReviewJob | null;
   judgeSite?: SupportedSite;
   onFocusSynthesisTab?: () => void;
-  onTriggerSynthesis?: () => void;
+  onTriggerSynthesis?: (mode: 'sequential' | 'batch') => void;
   canTriggerSynthesis?: boolean;
 }
 
@@ -212,29 +214,45 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
             <div className="text-center py-5 px-3 text-slate-400 text-xs italic bg-white/40 dark:bg-slate-900/40 rounded-lg border border-dashed border-slate-200 dark:border-slate-800 space-y-2">
               <p>
                 {status === 'WAITING_READY' || status === 'SENDING'
-                  ? `正在向 ${judgeSite} 当前会话分轮投递各 AI 回复数据进行全景汇总...`
+                  ? `正在向 ${judgeSite} 当前会话投递各 AI 回复数据进行全景汇总...`
                   : status === 'STREAMING'
                   ? `${judgeSite} 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...`
-                  : `终审支持两种处理方式：可分轮提交至 ${judgeSite} 生成深度聚合报告，或直接一键串联复制所有站点的原始回复。`}
+                  : `终审支持两种提交方式：可「分段提交」（分轮输入防字数超限）或「一次性提交」（合并单条直接发送），也可直接一键串联复制所有回复。`}
               </p>
               {status !== 'STREAMING' && (
                 <div className="pt-2 flex flex-wrap items-center justify-center gap-2 not-italic">
                   {canTriggerSynthesis && onTriggerSynthesis && (
-                    <button
-                      type="button"
-                      onClick={onTriggerSynthesis}
-                      className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer active:scale-95"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>{status === 'FAILED' ? `重试提交至 ${judgeSite} 终审` : `提交至 ${judgeSite} 终审`}</span>
-                    </button>
+                    <>
+                      {/* 选项 1：分段提交 */}
+                      <button
+                        type="button"
+                        onClick={() => onTriggerSynthesis('sequential')}
+                        title="按分轮逐步投递各站点回复，每轮等待简短确认，最后发送「开始汇总」（规避单次字数超限）"
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer active:scale-95"
+                      >
+                        <Layers className="w-3.5 h-3.5" />
+                        <span>{status === 'FAILED' ? `重试分段提交至 ${judgeSite}` : `分段提交至 ${judgeSite}`}</span>
+                      </button>
+
+                      {/* 选项 2：一次性提交 */}
+                      <button
+                        type="button"
+                        onClick={() => onTriggerSynthesis('batch')}
+                        title="汇集所有第三方回复与深度提炼指令，一次性直接发送至当前会话（最初方案）"
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer active:scale-95"
+                      >
+                        <Zap className="w-3.5 h-3.5 fill-current" />
+                        <span>{status === 'FAILED' ? `重试一次性提交至 ${judgeSite}` : `一次性提交至 ${judgeSite}`}</span>
+                      </button>
+                    </>
                   )}
+                  {/* 选项 3：一键复制所有回复 */}
                   <button
                     type="button"
                     onClick={handleCopyAllResponses}
                     disabled={!hasAnyResponses}
                     title={hasAnyResponses ? '将所有站点的回复串联复制到剪贴板' : '暂无有效站点回复可复制'}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-all cursor-pointer border ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition-all cursor-pointer border ${
                       copiedAll
                         ? 'bg-emerald-50 text-emerald-700 border-emerald-300 dark:bg-emerald-950 dark:text-emerald-300'
                         : hasAnyResponses

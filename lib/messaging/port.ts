@@ -28,8 +28,8 @@ export type PortMessage =
   | { type: 'OPEN_SITES'; payload: { sites: SupportedSite[] } }
   | { type: 'RETRY_SITE'; payload: { siteName: SupportedSite } }
   | { type: 'SKIP_SITE'; payload: { jobId?: string; siteName: SupportedSite; reason?: string } }
-  | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string } }
-  | { type: 'TRIGGER_SYNTHESIS'; payload: { jobId: string; judgeSite?: SupportedSite } }
+  | { type: 'FAST_FORWARD_QUORUM'; payload: { jobId: string; mode?: 'sequential' | 'batch' } }
+  | { type: 'TRIGGER_SYNTHESIS'; payload: { jobId: string; judgeSite?: SupportedSite; mode?: 'sequential' | 'batch' } }
   | { type: 'SET_JUDGE_SITE'; payload: { jobId?: string; judgeSite: SupportedSite } }
   | { type: 'EXTEND_TIMEOUT'; payload: { jobId: string; extraSeconds: number } }
   | {

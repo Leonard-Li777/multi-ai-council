@@ -349,5 +349,26 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       };
       expect(buildAllCompletedResponsesText(emptyJob)).toBe('');
     });
+
+    it('对比：分段提交生成分轮队列计划，而一次性提交生成单条聚合提示词', () => {
+      const runs: ProviderRun[] = [
+        { siteName: 'DeepSeek', status: 'DONE', cleanedResponse: 'DeepSeek 观点', responseSnapshot: '', retryCount: 0 },
+        { siteName: 'ChatGPT', status: 'DONE', cleanedResponse: 'ChatGPT 观点', responseSnapshot: '', retryCount: 0 },
+        { siteName: 'Claude', status: 'DONE', cleanedResponse: 'Claude 观点', responseSnapshot: '', retryCount: 0 },
+      ];
+
+      // 1. 分段提交（sequential）：生成引导词 + 各第三方分步 + 开始汇总
+      const seqPlan = buildSequentialSynthesisSteps(runs, 'DeepSeek');
+      expect(seqPlan.steps.length).toBe(4); // preamble + ChatGPT + Claude + commit
+      expect(seqPlan.steps[0]?.prompt).toContain('收到：【');
+      expect(seqPlan.steps[seqPlan.steps.length - 1]?.prompt).toBe('开始汇总');
+
+      // 2. 一次性提交（batch）：生成合并单条提示词（包含所有第三方回答与综合指令）
+      const batchResult = buildFollowUpSynthesisPrompt(runs, 'DeepSeek');
+      expect(batchResult.metaPrompt).toContain('### 【ChatGPT 的回答】');
+      expect(batchResult.metaPrompt).toContain('### 【Claude 的回答】');
+      expect(batchResult.metaPrompt).not.toContain('DeepSeek 观点');
+      expect(batchResult.metaPrompt).toContain('请结合你和他们的合并所有回复给出最终回答');
+    });
   });
 });

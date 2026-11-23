@@ -310,12 +310,24 @@ export const App: React.FC = () => {
   };
 
   // Quorum 快速降级终审
-  const handleFastForward = () => {
+  const handleFastForward = (mode: 'sequential' | 'batch' = 'sequential') => {
     if (activeJob) {
       if (portSendRef.current) {
-        portSendRef.current({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
+        portSendRef.current({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id, mode } });
       }
-      sendToBackground({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id } });
+      sendToBackground({ type: 'FAST_FORWARD_QUORUM', payload: { jobId: activeJob.id, mode } });
+    }
+  };
+
+  // 手动触发终审（支持 mode: 'sequential' 分段提交 或 'batch' 一次性提交）
+  const handleTriggerSynthesis = (mode: 'sequential' | 'batch' = 'sequential') => {
+    if (activeJob) {
+      const currentJudgeSite = activeJob?.aggregationPolicy?.judgeProvider || judgeSite;
+      const payload = { jobId: activeJob.id, judgeSite: currentJudgeSite, mode };
+      if (portSendRef.current) {
+        portSendRef.current({ type: 'TRIGGER_SYNTHESIS', payload });
+      }
+      sendToBackground({ type: 'TRIGGER_SYNTHESIS', payload });
     }
   };
 
@@ -491,7 +503,7 @@ export const App: React.FC = () => {
               </button>
               {quorumProgress.completedCount > 0 && (
                 <button
-                  onClick={handleFastForward}
+                  onClick={() => handleFastForward('sequential')}
                   className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
                 >
                   <FastForward className="w-3 h-3" />
@@ -586,7 +598,7 @@ export const App: React.FC = () => {
                 isRunning={isRunning}
                 canStart={promptText.trim().length > 0}
                 canFastForward={quorumProgress?.canFastForward || false}
-                onFastForward={handleFastForward}
+                onFastForward={() => handleFastForward('sequential')}
                 fastForwardTooltip={
                   quorumProgress?.canFastForward
                     ? `已就绪 ${quorumProgress.completedCount}/${quorumProgress.totalEnabled} 站点（满足 Quorum ${quorumProgress.minRequired}），点击跳过剩余站点发起终审`
@@ -636,7 +648,7 @@ export const App: React.FC = () => {
                   {quorumProgress && quorumProgress.completedCount > 0 && (
                     <button
                       onClick={() => {
-                        handleFastForward();
+                        handleFastForward('sequential');
                         setActiveTab('synthesis');
                       }}
                       className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
@@ -693,7 +705,7 @@ export const App: React.FC = () => {
               activeJob={activeJob}
               judgeSite={activeJob?.aggregationPolicy?.judgeProvider || judgeSite}
               onFocusSynthesisTab={() => handleFocusTab(activeJob?.aggregationPolicy?.judgeProvider || judgeSite)}
-              onTriggerSynthesis={handleFastForward}
+              onTriggerSynthesis={handleTriggerSynthesis}
               canTriggerSynthesis={(quorumProgress?.completedCount || 0) > 0}
             />
           </div>

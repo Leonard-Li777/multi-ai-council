@@ -519,7 +519,7 @@ export default defineBackground(() => {
         broadcastJobSync(activeJob);
       }
     } else if (msg.type === 'TRIGGER_SYNTHESIS') {
-      await triggerSynthesis(msg.payload.jobId, msg.payload.judgeSite);
+      await triggerSynthesis(msg.payload.jobId, msg.payload.judgeSite, msg.payload.mode);
     } else if (msg.type === 'FAST_FORWARD_QUORUM') {
       const activeJob = await getActiveJob();
       if (activeJob && activeJob.id === msg.payload.jobId) {
@@ -542,7 +542,7 @@ export default defineBackground(() => {
         }
         const updated = await batchUpdateProviderRuns(activeJob.id, batchUpdates);
         broadcastJobSync(updated);
-        await triggerSynthesis(activeJob.id);
+        await triggerSynthesis(activeJob.id, undefined, msg.payload.mode);
       }
     } else if (msg.type === 'MANUAL_OVERRIDE_RESPONSE') {
       const { jobId, siteName, text } = msg.payload;
@@ -1002,7 +1002,11 @@ export default defineBackground(() => {
     return;
   }
 
-  async function triggerSynthesis(jobId: string, overrideJudgeSite?: SupportedSite) {
+  async function triggerSynthesis(
+    jobId: string,
+    overrideJudgeSite?: SupportedSite,
+    mode: 'sequential' | 'batch' = 'sequential'
+  ) {
     const job = await getActiveJob();
     if (!job || job.id !== jobId) return;
     if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
@@ -1014,19 +1018,42 @@ export default defineBackground(() => {
     }
 
     const runs = Object.values(job.providerRuns);
-    // 构造面向所选终审站点当前会话的分轮依次送审计划（严格排除该站点自身回复，防止单次粘贴超字数限制）
-    const { steps, metaPrompt, anonymousMap, participatingCount } = buildSequentialSynthesisSteps(
-      runs,
-      judgeSite
-    );
 
-    if (participatingCount === 0 || steps.length === 0) {
+    let steps: SynthesisStep[];
+    let metaPrompt: string;
+    let anonymousMap: Record<string, SupportedSite>;
+    let participatingCount: number;
+
+    if (mode === 'batch') {
+      // 模式 A：一次性提交（最初方案），单条提示词汇集所有第三方回复与综合指令
+      const res = buildFollowUpSynthesisPrompt(runs, judgeSite);
+      metaPrompt = res.metaPrompt;
+      anonymousMap = res.anonymousMap;
+      participatingCount = res.participatingCount;
+      steps = [
+        {
+          id: 'single',
+          label: '一次性提交终审提示词',
+          prompt: metaPrompt,
+          isFinal: true,
+        },
+      ];
+    } else {
+      // 模式 B：分段提交（分轮提交），引导词 -> 逐站发送 -> 开始汇总
+      const res = buildSequentialSynthesisSteps(runs, judgeSite);
+      steps = res.steps;
+      metaPrompt = res.metaPrompt;
+      anonymousMap = res.anonymousMap;
+      participatingCount = res.participatingCount;
+    }
+
+    if (participatingCount === 0 || steps.length === 0 || !metaPrompt) {
       console.warn(`[Background] No other completed provider runs available for synthesis on ${judgeSite}`);
       return;
     }
 
     console.log(
-      `[Background] Triggering sequential synthesis on ${judgeSite} for Job ${jobId} with ${participatingCount} other models (${steps.length} turns)`
+      `[Background] Triggering synthesis (${mode}) on ${judgeSite} for Job ${jobId} with ${participatingCount} other models (${steps.length} turns)`
     );
 
     const dispatchPayload = { jobId, metaPrompt, steps };
