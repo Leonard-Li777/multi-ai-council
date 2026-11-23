@@ -24,6 +24,7 @@ export function createSequentialSynthesisRunner(
   let activeJobId: string | null = null;
   let activeToken = 0;
   let stopListening: (() => void) | null = null;
+  let turnResolver: (() => void) | null = null;
 
   const cleanupListener = () => {
     if (stopListening) {
@@ -36,6 +37,10 @@ export function createSequentialSynthesisRunner(
     activeToken++;
     isSynthesizing = false;
     cleanupListener();
+    if (turnResolver) {
+      turnResolver();
+      turnResolver = null;
+    }
   };
 
   const handleDispatchSynthesis = async (payload: {
@@ -44,9 +49,9 @@ export function createSequentialSynthesisRunner(
     steps?: SynthesisStep[];
   }): Promise<void> => {
     const { jobId, metaPrompt, steps } = payload;
-    if (isSynthesizing && activeJobId === jobId) {
-      console.log(`[SynthesisRunner:${adapter.siteName}] Ignoring duplicate SYNTHESIS dispatch for Job ${jobId}`);
-      return;
+    if (isSynthesizing) {
+      console.log(`[SynthesisRunner:${adapter.siteName}] Preempting previous synthesis for Job ${jobId}`);
+      cancel();
     }
 
     activeJobId = jobId;
@@ -80,8 +85,11 @@ export function createSequentialSynthesisRunner(
           settled = true;
           window.clearTimeout(timer);
           cleanupListener();
+          turnResolver = null;
           resolve();
         };
+
+        turnResolver = finish;
 
         const timer = window.setTimeout(() => {
           console.warn(
@@ -188,7 +196,15 @@ export function createSequentialSynthesisRunner(
 
         if (!step.isFinal) {
           await waitForIntermediateTurnDone();
+          if (myToken !== activeToken) {
+            isSynthesizing = false;
+            return;
+          }
           await new Promise((r) => setTimeout(r, 1200));
+          if (myToken !== activeToken) {
+            isSynthesizing = false;
+            return;
+          }
         } else {
           send({
             type: 'SYNTHESIS_STATUS_CHANGE',

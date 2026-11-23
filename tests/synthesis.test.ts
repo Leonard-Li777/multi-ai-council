@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildAnonymizedSynthesisPrompt,
   buildFollowUpSynthesisPrompt,
@@ -9,7 +9,9 @@ import {
   SEQUENTIAL_SYNTHESIS_PREAMBLE,
   SEQUENTIAL_SYNTHESIS_FINAL_COMMIT,
 } from '../lib/utils/synthesis-builder';
-import type { ProviderRun, ReviewJob } from '../lib/types/review-job';
+import { createSequentialSynthesisRunner } from '../lib/utils/synthesis-runner';
+import type { AISiteAdapter } from '../lib/adapters/base';
+import type { ProviderRun, ReviewJob, SupportedSite } from '../lib/types/review-job';
 
 describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
   it('should sanitize brand mentions accurately', () => {
@@ -369,6 +371,87 @@ describe('Anonymized Synthesis Builder & Prompt Injection Defense', () => {
       expect(batchResult.metaPrompt).toContain('### 【Claude 的回答】');
       expect(batchResult.metaPrompt).not.toContain('DeepSeek 观点');
       expect(batchResult.metaPrompt).toContain('请结合你和他们的合并所有回复给出最终回答');
+    });
+
+    it('当重新设置终审目标站点时（如从 DeepSeek 切换到 ChatGPT），新提示词自动排除新终审站点并收纳旧站点', () => {
+      const runs: ProviderRun[] = [
+        { siteName: 'DeepSeek', status: 'DONE', cleanedResponse: 'DeepSeek 独家架构方案', responseSnapshot: '', retryCount: 0 },
+        { siteName: 'ChatGPT', status: 'DONE', cleanedResponse: 'ChatGPT 独家并发方案', responseSnapshot: '', retryCount: 0 },
+        { siteName: 'Claude', status: 'DONE', cleanedResponse: 'Claude 独家红队审计', responseSnapshot: '', retryCount: 0 },
+      ];
+
+      // 切换终审站点为 ChatGPT
+      const chatgptBatch = buildFollowUpSynthesisPrompt(runs, 'ChatGPT');
+      expect(chatgptBatch.metaPrompt).toContain('### 【DeepSeek 的回答】');
+      expect(chatgptBatch.metaPrompt).toContain('DeepSeek 独家架构方案');
+      expect(chatgptBatch.metaPrompt).toContain('### 【Claude 的回答】');
+      expect(chatgptBatch.metaPrompt).toContain('Claude 独家红队审计');
+      expect(chatgptBatch.metaPrompt).not.toContain('ChatGPT 独家并发方案'); // 新终审站点自身被排除
+
+      const chatgptSeq = buildSequentialSynthesisSteps(runs, 'ChatGPT');
+      expect(chatgptSeq.steps.some((s) => s.prompt.includes('DeepSeek 独家架构方案'))).toBe(true);
+      expect(chatgptSeq.steps.some((s) => s.prompt.includes('ChatGPT 独家并发方案'))).toBe(false);
+    });
+  });
+
+  describe('Synthesis Runner Preemption & Re-dispatch on Same Job', () => {
+    it('当同一个任务再次派发终审时，应主动调用 cancel() 抢占并以新 token 启动，不再丢弃请求', async () => {
+      const messages: any[] = [];
+      const sendFn = vi.fn((msg) => {
+        messages.push(msg);
+      });
+
+      const mockAdapter: AISiteAdapter = {
+        siteName: 'ChatGPT',
+        matchUrl: () => true,
+        findInputBox: () => document.createElement('textarea'),
+        findSendButton: () => document.createElement('button'),
+        sendPrompt: vi.fn().mockResolvedValue(true),
+        validateSubmission: vi.fn().mockResolvedValue(true),
+        checkBlocker: vi.fn().mockResolvedValue(null),
+        listenGeneration: vi.fn((_onUpdate, onDone) => {
+          const t = setTimeout(() => {
+            onDone?.('第一轮终审结果');
+          }, 30);
+          return () => clearTimeout(t);
+        }),
+        autoRecoverAndContinue: vi.fn().mockResolvedValue('STREAMING'),
+        getConversationUrl: () => 'https://chatgpt.com/c/123',
+      };
+
+      const runner = createSequentialSynthesisRunner(mockAdapter, sendFn);
+
+      // 1. 验证并发抢占：在 p1 运行期间触发 p2，p1 立即安全退出，p2 接管并完成
+      const p1 = runner.handleDispatchSynthesis({
+        jobId: 'job-123',
+        metaPrompt: '第一次终审指令',
+        steps: [{ id: 'turn-1', label: '第1次', prompt: '提示词1', isFinal: true }],
+      });
+
+      const p2 = runner.handleDispatchSynthesis({
+        jobId: 'job-123',
+        metaPrompt: '第二次终审指令',
+        steps: [{ id: 'turn-2', label: '第2次', prompt: '提示词2', isFinal: true }],
+      });
+
+      await Promise.all([p1, p2]);
+      // 等待异步 listenGeneration 判定收敛
+      await new Promise((r) => setTimeout(r, 60));
+
+      // 验证抢占生效，p2 成功完成终审并发送 DONE
+      expect(mockAdapter.sendPrompt).toHaveBeenCalledWith('提示词2');
+      expect(messages.some((m) => m.type === 'SYNTHESIS_STATUS_CHANGE' && m.payload.status === 'DONE')).toBe(true);
+
+      // 2. 验证重新提交：在完成后再次派发终审（用户点击重新提交），能再次完整触发
+      await runner.handleDispatchSynthesis({
+        jobId: 'job-123',
+        metaPrompt: '第三次重新提交终审',
+        steps: [{ id: 'turn-3', label: '第3次', prompt: '提示词3', isFinal: true }],
+      });
+      await new Promise((r) => setTimeout(r, 60));
+
+      expect(mockAdapter.sendPrompt).toHaveBeenCalledWith('提示词3');
+      expect(mockAdapter.sendPrompt).toHaveBeenCalledTimes(2);
     });
   });
 });

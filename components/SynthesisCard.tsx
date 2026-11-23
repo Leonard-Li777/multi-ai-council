@@ -15,6 +15,7 @@ import {
   Play,
   Layers,
   Zap,
+  RotateCcw,
 } from 'lucide-react';
 import {
   revealModelIdentities,
@@ -31,6 +32,7 @@ interface SynthesisCardProps {
   onFocusSynthesisTab?: () => void;
   onTriggerSynthesis?: (mode: 'sequential' | 'batch') => void;
   canTriggerSynthesis?: boolean;
+  onJudgeSiteChange?: (site: SupportedSite) => void;
 }
 
 export const SynthesisCard: React.FC<SynthesisCardProps> = ({
@@ -40,6 +42,7 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
   onFocusSynthesisTab,
   onTriggerSynthesis,
   canTriggerSynthesis,
+  onJudgeSiteChange,
 }) => {
   const [copied, setCopied] = useState(false);
   const [copiedAll, setCopiedAll] = useState(false);
@@ -116,7 +119,21 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
           </div>
           <div>
             <div className="font-bold text-xs text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
-              <span>{judgeSite} 汇总窗口</span>
+              <span>终审:</span>
+              <select
+                value={judgeSite}
+                onChange={(e) => onJudgeSiteChange?.(e.target.value as SupportedSite)}
+                disabled={status === 'STREAMING'}
+                title="选择或切换负责终审提炼的 AI 站点"
+                className="bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-800 text-indigo-900 dark:text-indigo-200 text-xs rounded px-1.5 py-0.5 font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-2xs"
+              >
+                {(['DeepSeek', 'ChatGPT', 'Claude', 'Gemini', 'Qwen', 'Wenxin'] as SupportedSite[]).map((site) => (
+                  <option key={site} value={site}>
+                    {site}
+                  </option>
+                ))}
+              </select>
+              <span>汇总窗口</span>
               {status === 'STREAMING' && (
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
               )}
@@ -219,7 +236,6 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                   ? `${judgeSite} 正在综合提炼并生成最终汇总报告，不漏掉任何不同观点...`
                   : `终审支持两种提交方式：可「分段提交」（分轮输入防字数超限）或「一次性提交」（合并单条直接发送），也可直接一键串联复制所有回复。`}
               </p>
-              {status !== 'STREAMING' && (
                 <div className="pt-2 flex flex-wrap items-center justify-center gap-2 not-italic">
                   {canTriggerSynthesis && onTriggerSynthesis && (
                     <>
@@ -231,7 +247,13 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                         className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer active:scale-95"
                       >
                         <Layers className="w-3.5 h-3.5" />
-                        <span>{status === 'FAILED' ? `重试分段提交至 ${judgeSite}` : `分段提交至 ${judgeSite}`}</span>
+                        <span>
+                          {status === 'STREAMING'
+                            ? `重发分段提交至 ${judgeSite}`
+                            : status === 'FAILED'
+                            ? `重试分段提交至 ${judgeSite}`
+                            : `分段提交至 ${judgeSite}`}
+                        </span>
                       </button>
 
                       {/* 选项 2：一次性提交 */}
@@ -242,7 +264,13 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                         className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs transition-all cursor-pointer active:scale-95"
                       >
                         <Zap className="w-3.5 h-3.5 fill-current" />
-                        <span>{status === 'FAILED' ? `重试一次性提交至 ${judgeSite}` : `一次性提交至 ${judgeSite}`}</span>
+                        <span>
+                          {status === 'STREAMING'
+                            ? `重发一次性提交至 ${judgeSite}`
+                            : status === 'FAILED'
+                            ? `重试一次性提交至 ${judgeSite}`
+                            : `一次性提交至 ${judgeSite}`}
+                        </span>
                       </button>
                     </>
                   )}
@@ -268,7 +296,40 @@ export const SynthesisCard: React.FC<SynthesisCardProps> = ({
                     <span>{copiedAll ? '已复制所有回复' : '一键复制所有回复'}</span>
                   </button>
                 </div>
-              )}
+            </div>
+          )}
+
+          {/* 当已存在终审汇总正文时，依然常驻提供重新提交操作条（方便更换目标站点或重跑终审） */}
+          {displayText && (
+            <div className="mt-2.5 pt-2 border-t border-indigo-100 dark:border-indigo-900/40 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400">
+                <RotateCcw className="w-3.5 h-3.5 text-indigo-500" />
+                <span>对当前汇总不满意或已更换站点？可重新提交：</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {canTriggerSynthesis && onTriggerSynthesis && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onTriggerSynthesis('sequential')}
+                      title={`重新按分轮逐步投递各站点回复至 ${judgeSite}（规避单次字数超限）`}
+                      className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 shadow-2xs transition-all cursor-pointer active:scale-95"
+                    >
+                      <Layers className="w-3 h-3" />
+                      <span>{status === 'STREAMING' ? '生成中 (重发分段)' : `重新分段提交至 ${judgeSite}`}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onTriggerSynthesis('batch')}
+                      title={`重新汇集所有第三方回复一次性发送至 ${judgeSite}（最初方案）`}
+                      className="px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-[11px] font-semibold inline-flex items-center gap-1 shadow-2xs transition-all cursor-pointer active:scale-95"
+                    >
+                      <Zap className="w-3 h-3 fill-current" />
+                      <span>{status === 'STREAMING' ? '生成中 (重发一次性)' : `重新一次性提交至 ${judgeSite}`}</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
 

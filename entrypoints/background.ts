@@ -511,10 +511,20 @@ export default defineBackground(() => {
     } else if (msg.type === 'SET_JUDGE_SITE') {
       const activeJob = await getActiveJob();
       if (activeJob && (!msg.payload.jobId || activeJob.id === msg.payload.jobId)) {
+        const oldJudge = activeJob.aggregationPolicy?.judgeProvider;
         activeJob.aggregationPolicy = {
           ...activeJob.aggregationPolicy,
           judgeProvider: msg.payload.judgeSite,
         };
+        // 若终审站点发生变更，复位终审状态为 PENDING 并清空历史文本，允许在新站点重新发起终审
+        if (oldJudge !== msg.payload.judgeSite && activeJob.synthesisRun) {
+          activeJob.synthesisRun = {
+            status: 'PENDING',
+            finalMarkdown: '',
+            tabId: undefined,
+            anonymousMap: {},
+          };
+        }
         await saveActiveJob(activeJob);
         broadcastJobSync(activeJob);
       }
@@ -1009,12 +1019,19 @@ export default defineBackground(() => {
   ) {
     const job = await getActiveJob();
     if (!job || job.id !== jobId) return;
-    if (job.synthesisRun && job.synthesisRun.status === 'STREAMING') return;
 
     // 确定本次终审站点：优先采用显式传入 -> 任务配置 -> 全局存储 -> 默认 DeepSeek
     let judgeSite: SupportedSite = overrideJudgeSite || job.aggregationPolicy?.judgeProvider || 'DeepSeek';
     if (!SITE_QUERY_PATTERNS[judgeSite]) {
       judgeSite = 'DeepSeek';
+    }
+
+    if (job.aggregationPolicy?.judgeProvider !== judgeSite) {
+      job.aggregationPolicy = {
+        ...job.aggregationPolicy,
+        judgeProvider: judgeSite,
+      };
+      await saveActiveJob(job);
     }
 
     const runs = Object.values(job.providerRuns);

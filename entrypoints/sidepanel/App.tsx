@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import DOMPurify from 'dompurify';
-import type { ReviewJob, SupportedSite, ProviderRun } from '../../lib/types/review-job';
+import type { ReviewJob, SupportedSite, ProviderRun, ProviderStatus } from '../../lib/types/review-job';
 import {
   getActiveJob,
   saveActiveJob,
@@ -165,6 +165,7 @@ export const App: React.FC = () => {
       chrome.storage.local.set({ judge_site: site }).catch(() => {});
     }
     if (activeJob) {
+      const oldJudge = activeJob.aggregationPolicy?.judgeProvider;
       const updatedJob: ReviewJob = {
         ...activeJob,
         updatedAt: Date.now(),
@@ -172,6 +173,17 @@ export const App: React.FC = () => {
           ...activeJob.aggregationPolicy,
           judgeProvider: site,
         },
+        // 若终审站点发生变更，复位终审状态为 PENDING 并清空历史文本，允许在新站点重新发起终审
+        ...(oldJudge !== site && activeJob.synthesisRun
+          ? {
+              synthesisRun: {
+                status: 'PENDING' as ProviderStatus,
+                finalMarkdown: '',
+                tabId: undefined,
+                anonymousMap: {},
+              },
+            }
+          : {}),
       };
       setActiveJob(updatedJob);
       await saveActiveJob(updatedJob);
@@ -707,6 +719,7 @@ export const App: React.FC = () => {
               onFocusSynthesisTab={() => handleFocusTab(activeJob?.aggregationPolicy?.judgeProvider || judgeSite)}
               onTriggerSynthesis={handleTriggerSynthesis}
               canTriggerSynthesis={(quorumProgress?.completedCount || 0) > 0}
+              onJudgeSiteChange={handleJudgeSiteChange}
             />
           </div>
         )}
